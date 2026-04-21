@@ -1,0 +1,78 @@
+{
+  "name": "secure-review",
+  "version": "0.1.0",
+  "description": "Multi-model security review for AI-generated code. Runs OpenAI, Anthropic, and Google reviewers in parallel and posts findings as PR comments.",
+  "keywords": [
+    "security",
+    "code-review",
+    "ai",
+    "llm",
+    "owasp",
+    "sast",
+    "github-action",
+    "claude",
+    "gpt",
+    "gemini"
+  ],
+  "author": "Alfonso Pedro Ridao",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fonCki/secure-review.git"
+  },
+  "bin": {
+    "secure-review": "dist/cli.js"
+  },
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "skills",
+    "action.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "build:action": "ncc build src/cli.ts -o dist-action --minify --source-map",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test",
+    "clean": "rm -rf dist dist-action coverage"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.33.0",
+    "@google/generative-ai": "^0.21.0",
+    "@octokit/rest": "^21.0.2",
+    "commander": "^12.1.0",
+    "js-yaml": "^4.1.0",
+    "openai": "^4.73.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.17.0",
+    "@typescript-eslint/eslint-plugin": "^8.15.0",
+    "@typescript-eslint/parser": "^8.15.0",
+    "@vercel/ncc": "^0.38.3",
+    "eslint": "^9.15.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  },
+  "packageManager": "pnpm@10.33.0"
+}

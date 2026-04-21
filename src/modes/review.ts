@@ -1,0 +1,98 @@
+import { getAdapter } from '../adapters/factory.js';
+import type { Env, SecureReviewConfig } from '../config/schema.js';
+import { loadSkill, resolveSkillPath } from '../config/load.js';
+import { aggregate, severityBreakdown } from '../findings/aggregate.js';
+import type { Finding, SeverityBreakdown } from '../findings/schema.js';
+import { runReviewer, type ReviewerRunOutput } from '../roles/reviewer.js';
+import { runAllSast, type SastSummary } from '../sast/index.js';
+import { readSourceTree } from '../util/files.js';
+import { log } from '../util/logger.js';
+
+export interface ReviewModeInput {
+  root: string;
+  config: SecureReviewConfig;
+  configDir: string;
+  env: Env;
+}
+
+export interface ReviewModeOutput {
+  findings: Finding[];
+  breakdown: SeverityBreakdown;
+  sast: SastSummary;
+  perReviewer: ReviewerRunOutput[];
+  totalCostUSD: number;
+  totalDurationMs: number;
+}
+
+export async function runReviewMode(input: ReviewModeInput): Promise<ReviewModeOutput> {
+  const { root, config, configDir, env } = input;
+  const started = Date.now();
+
+  log.header(`Review mode — ${root}`);
+  log.info(`Reviewers: ${config.reviewers.map((r) => r.name).join(', ')}`);
+
+  // 1. Read source tree
+  const files = await readSourceTree(root);
+  log.info(`Loaded ${files.length} source files`);
+
+  // 2. Run SAST (treat its findings as additional "reviewers")
+  const sast = await runAllSast(root, config.sast);
+  if (config.sast.enabled) {
+    logSastSummary(sast);
+  }
+
+  // 3. Build context for reviewers
+  const sastContextFindings = config.sast.inject_into_reviewer_context ? sast.findings : undefined;
+
+  // 4. Load skills + adapters + run reviewers (parallel if configured)
+  const reviewerRuns = await runReviewers(config, configDir, env, files, sastContextFindings);
+
+  // 5. Merge all findings (AI + SAST) into one aggregated set
+  const allFindings: Finding[] = [];
+  for (const r of reviewerRuns) allFindings.push(...r.findings);
+  allFindings.push(...sast.findings);
+  const aggregated = aggregate(allFindings);
+
+  const totalCost = reviewerRuns.reduce((s, r) => s + r.usage.costUSD, 0);
+
+  return {
+    findings: aggregated,
+    breakdown: severityBreakdown(aggregated),
+    sast,
+    perReviewer: reviewerRuns,
+    totalCostUSD: totalCost,
+    totalDurationMs: Date.now() - started,
+  };
+}
+
+async function runReviewers(
+  config: SecureReviewConfig,
+  configDir: string,
+  env: Env,
+  files: Awaited<ReturnType<typeof readSourceTree>>,
+  priorFindings: Finding[] | undefined,
+): Promise<ReviewerRunOutput[]> {
+  const tasks = config.reviewers.map(async (reviewer) => {
+    const adapter = getAdapter({ provider: reviewer.provider, model: reviewer.model }, env);
+    const skill = await loadSkill(resolveSkillPath(reviewer.skill, configDir));
+    log.debug(`${reviewer.name} → ${reviewer.provider}/${reviewer.model} (${adapter.mode})`);
+    const result = await runReviewer({ reviewer, adapter, skill, files, priorFindings });
+    const status = result.error ? 'FAILED' : `${result.findings.length} findings`;
+    log.info(`  ${reviewer.name}: ${status} ($${result.usage.costUSD.toFixed(3)}, ${(result.durationMs / 1000).toFixed(1)}s)`);
+    return result;
+  });
+  return config.review.parallel ? Promise.all(tasks) : sequential(tasks);
+}
+
+async function sequential<T>(tasks: Array<Promise<T>>): Promise<T[]> {
+  const out: T[] = [];
+  for (const t of tasks) out.push(await t);
+  return out;
+}
+
+function logSastSummary(s: SastSummary): void {
+  const sgStatus = s.semgrep.ran ? `${s.semgrep.count} findings` : `skipped (${s.semgrep.error ?? 'not installed'})`;
+  const esStatus = s.eslint.ran ? `${s.eslint.count} findings` : `skipped (${s.eslint.error ?? 'not installed'})`;
+  const npStatus = s.npmAudit.ran ? `${s.npmAudit.count} findings` : `skipped (${s.npmAudit.error ?? 'not installed'})`;
+  log.info(`SAST: semgrep=${sgStatus}, eslint=${esStatus}, npm-audit=${npStatus}`);
+}

@@ -1,0 +1,56 @@
+# Example config for secure-review.
+# Place at your repo root (or pass via --config). All paths are resolved
+# relative to this file.
+
+writer:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  skill: ../skills/secure-node-writer.md
+
+# Three reviewers, one per provider — the "cross-model" design from
+# Meeting 3 (see project README). Each has its own skill MD defining
+# its role and focus.
+reviewers:
+  - name: codex-web-sec
+    provider: openai
+    model: gpt-5-codex
+    skill: ../skills/web-sec-reviewer.md
+  - name: sonnet-owasp
+    provider: anthropic
+    model: claude-sonnet-4-6
+    skill: ../skills/owasp-reviewer.md
+  - name: gemini-dependencies
+    provider: google
+    model: gemini-2.5-pro
+    skill: ../skills/dependency-reviewer.md
+
+# SAST runs alongside the AI reviewers — the findings flow into the same
+# aggregator. High-confidence findings are those flagged by multiple
+# reviewers OR by SAST + AI.
+sast:
+  enabled: true
+  tools: [semgrep, eslint, npm_audit]
+  inject_into_reviewer_context: true
+
+review:
+  parallel: true
+
+# Cross-model rotating loop — Iteration N uses reviewers[N % len(reviewers)].
+# This is the Condition F experimental design: each iteration gets a fresh
+# reviewer with different training data.
+fix:
+  mode: sequential_rotation
+  max_iterations: 3
+  final_verification: all_reviewers
+
+# Gates fire between iterations. Anything triggered halts the loop.
+gates:
+  block_on_new_critical: true
+  block_on_new_high: false
+  max_cost_usd: 20
+  max_wall_time_minutes: 15
+
+output:
+  report: ./reports/report-{timestamp}.md
+  findings: ./reports/findings-{timestamp}.json
+  diff: ./reports/diff-{timestamp}.patch

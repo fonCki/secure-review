@@ -1,0 +1,22 @@
+name: 'Secure Review'
+description: 'Multi-model security review for AI-generated code. Runs OpenAI, Anthropic, and Google reviewers in parallel and posts findings as PR comments.'
+author: 'Alfonso Pedro Ridao'
+branding:
+  icon: 'shield'
+  color: 'red'
+inputs:
+  config:
+    description: 'Path to .secure-review.yml'
+    required: false
+    default: '.secure-review.yml'
+  mode:
+    description: 'review | fix'
+    required: false
+    default: 'review'
+  max-cost-usd:
+    description: 'Cost ceiling per run'
+    required: false
+    default: '20'
+runs:
+  using: 'node20'
+  main: 'dist-action/index.js'

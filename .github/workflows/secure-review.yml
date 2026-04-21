@@ -1,0 +1,27 @@
+name: Secure Review
+
+on: pull_request
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # Only run on PRs from the same repo. Fork PRs don't get access to secrets,
+    # so the reviewer would fail or silently skip. Repository owners who want
+    # to review fork PRs should use pull_request_target with an approval gate.
+    if: github.event.pull_request.head.repo.fork == false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: fonCki/secure-review@v1
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_API_KEY:    ${{ secrets.GOOGLE_API_KEY }}
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
