@@ -69,19 +69,32 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
     skill: await loadSkill(resolveSkillPath(config.writer.skill, configDir)),
   };
 
-  // Initial scan — SAST + first-pass reviewer aggregation for "before" baseline
+  // Initial scan — all reviewers in parallel + SAST. Establishes the
+  // aggregated "before" baseline used to measure regression/resolution.
   const first = reviewerInstances[0];
   if (!first) throw new Error('At least one reviewer is required');
   const initialFiles = await readSourceTree(root);
   const initialSast = await runAllSast(root, config.sast);
-  const initialReviewer = await runReviewer({
-    reviewer: first.ref,
-    adapter: first.adapter,
-    skill: first.skill,
-    files: initialFiles,
-    priorFindings: config.sast.inject_into_reviewer_context ? initialSast.findings : undefined,
-  });
-  let currentFindings = aggregate([...initialReviewer.findings, ...initialSast.findings]);
+  const initialReviewerRuns = await Promise.all(
+    reviewerInstances.map((r) =>
+      runReviewer({
+        reviewer: r.ref,
+        adapter: r.adapter,
+        skill: r.skill,
+        files: initialFiles,
+        priorFindings: config.sast.inject_into_reviewer_context ? initialSast.findings : undefined,
+      }),
+    ),
+  );
+  const initialReviewer = initialReviewerRuns[0] as ReviewerRunOutput;
+  for (const r of initialReviewerRuns)
+    log.info(
+      `  initial-scan ${r.reviewer}: ${r.error ? 'FAILED' : `${r.findings.length} findings`} ($${r.usage.costUSD.toFixed(3)}, ${(r.durationMs / 1000).toFixed(1)}s)`,
+    );
+  let currentFindings = aggregate([
+    ...initialReviewerRuns.flatMap((r) => r.findings),
+    ...initialSast.findings,
+  ]);
   const initialFindings = currentFindings;
 
   const iterations: IterationRecord[] = [];

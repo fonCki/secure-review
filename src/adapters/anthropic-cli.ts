@@ -18,11 +18,21 @@ export class AnthropicCLIAdapter implements ModelAdapter {
 
   async complete(input: CompleteInput): Promise<CompleteOutput> {
     const started = Date.now();
-    const combined = `<system>\n${input.system}\n</system>\n\n<user>\n${input.user}\n</user>`;
-    // `claude -p --output-format json` returns an array of stream-json entries.
-    // The entry with type="result" has {result, total_cost_usd, usage:{...}}.
-    const args = ['-p', '--output-format', 'json', '--model', this.model];
-    const result = await runCli(this.binary, args, combined);
+    // Use --bare to strip Claude Code's default coder system prompt (which
+    // would otherwise cause the model to respond with prose explanation
+    // rather than the JSON we request). --system-prompt replaces the system
+    // block with our reviewer instructions. The user prompt goes on stdin.
+    const args = [
+      '-p',
+      '--bare',
+      '--system-prompt',
+      input.system,
+      '--output-format',
+      'json',
+      '--model',
+      this.model,
+    ];
+    const result = await runCli(this.binary, args, input.user);
     let text = result.stdout;
     let inputTokens = 0;
     let outputTokens = 0;
