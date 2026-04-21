@@ -218,7 +218,21 @@ async function main(): Promise<void> {
       }
     });
 
-  await program.parseAsync(process.argv);
+  // When running inside GitHub Actions with no explicit subcommand, default to `pr`.
+  // The action.yml runs this entry with inputs mapped to env vars but no argv
+  // subcommand — without this shim the CLI would print --help and exit.
+  const argv = [...process.argv];
+  const inRunner = process.env.GITHUB_ACTIONS === 'true';
+  const hasSubcommand = argv.slice(2).some((a) => ['review', 'fix', 'pr', 'scan', 'help'].includes(a));
+  if (inRunner && !hasSubcommand) {
+    const mode = (process.env.INPUT_MODE ?? 'review').toLowerCase();
+    argv.push('pr');
+    if (mode === 'fix') argv.push('--autofix');
+    const configInput = process.env.INPUT_CONFIG;
+    if (configInput) argv.push('--config', configInput);
+  }
+
+  await program.parseAsync(argv);
 }
 
 main().catch((err) => {

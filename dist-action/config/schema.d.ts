@@ -327,12 +327,13 @@ export declare const EnvSchema: z.ZodObject<{
     GOOGLE_MODE: "api" | "cli";
     CLAUDE_CLI_BIN: string;
     GEMINI_CLI_BIN: string;
+    GITHUB_ACTIONS?: string | undefined;
     ANTHROPIC_API_KEY?: string | undefined;
     OPENAI_API_KEY?: string | undefined;
     GOOGLE_API_KEY?: string | undefined;
     GITHUB_TOKEN?: string | undefined;
-    GITHUB_ACTIONS?: string | undefined;
 }, {
+    GITHUB_ACTIONS?: string | undefined;
     ANTHROPIC_API_KEY?: string | undefined;
     OPENAI_API_KEY?: string | undefined;
     GOOGLE_API_KEY?: string | undefined;
@@ -342,7 +343,6 @@ export declare const EnvSchema: z.ZodObject<{
     CLAUDE_CLI_BIN?: string | undefined;
     GEMINI_CLI_BIN?: string | undefined;
     GITHUB_TOKEN?: string | undefined;
-    GITHUB_ACTIONS?: string | undefined;
 }>;
 export type Env = z.infer<typeof EnvSchema>;
 //# sourceMappingURL=schema.d.ts.map
