@@ -10,14 +10,21 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
-    # Only run on PRs from the same repo. Fork PRs don't get access to secrets,
-    # so the reviewer would fail or silently skip. Repository owners who want
-    # to review fork PRs should use pull_request_target with an approval gate.
+    # Fork PRs don't get access to secrets — the reviewer would no-op. Owners
+    # who want to review fork PRs should switch to pull_request_target with
+    # an explicit approval gate.
     if: github.event.pull_request.head.repo.fork == false
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # Install Semgrep so the SAST layer actually runs on the runner.
+      # Without this, semgrep silently skips and only AI reviewers + npm audit
+      # contribute to findings.
+      - name: Install Semgrep
+        run: pip install semgrep
+        shell: bash
 
       - uses: fonCki/secure-review@v1
         env:
