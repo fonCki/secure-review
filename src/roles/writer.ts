@@ -83,7 +83,7 @@ ${findingsList}`;
       system,
       user,
       jsonMode: true,
-      maxTokens: writer.maxTokens ?? 32_000,
+      maxTokens: writer.maxTokens ?? 16_000,
     });
     const parsed = extractJson(response.text) as {
       changes?: Array<{ file: string; content: string }>;

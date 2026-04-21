@@ -19,24 +19,30 @@ export class AnthropicCLIAdapter implements ModelAdapter {
   async complete(input: CompleteInput): Promise<CompleteOutput> {
     const started = Date.now();
     const combined = `<system>\n${input.system}\n</system>\n\n<user>\n${input.user}\n</user>`;
+    // `claude -p --output-format json` returns an array of stream-json entries.
+    // The entry with type="result" has {result, total_cost_usd, usage:{...}}.
     const args = ['-p', '--output-format', 'json', '--model', this.model];
     const result = await runCli(this.binary, args, combined);
-    // `claude -p --output-format json` outputs a single JSON object with
-    // fields {result, total_cost_usd, usage:{input_tokens, output_tokens, ...}}
     let text = result.stdout;
     let inputTokens = 0;
     let outputTokens = 0;
     let costFromCli: number | undefined;
     try {
-      const parsed = JSON.parse(result.stdout) as {
-        result?: string;
-        total_cost_usd?: number;
-        usage?: { input_tokens?: number; output_tokens?: number };
-      };
-      if (parsed.result) text = parsed.result;
-      inputTokens = parsed.usage?.input_tokens ?? 0;
-      outputTokens = parsed.usage?.output_tokens ?? 0;
-      costFromCli = parsed.total_cost_usd;
+      const parsed = JSON.parse(result.stdout) as unknown;
+      let resultEntry:
+        | { result?: string; total_cost_usd?: number; usage?: { input_tokens?: number; output_tokens?: number } }
+        | undefined;
+      if (Array.isArray(parsed)) {
+        resultEntry = (parsed as Array<{ type?: string }>).find(
+          (e) => e.type === 'result',
+        ) as typeof resultEntry;
+      } else if (typeof parsed === 'object' && parsed !== null) {
+        resultEntry = parsed as typeof resultEntry;
+      }
+      if (resultEntry?.result) text = resultEntry.result;
+      inputTokens = resultEntry?.usage?.input_tokens ?? 0;
+      outputTokens = resultEntry?.usage?.output_tokens ?? 0;
+      costFromCli = resultEntry?.total_cost_usd;
     } catch {
       // Not JSON — treat raw stdout as text, estimate cost from length
       inputTokens = Math.ceil(input.user.length / 4);

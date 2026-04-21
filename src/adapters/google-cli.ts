@@ -3,11 +3,11 @@ import { estimateCost } from '../util/cost.js';
 import type { CompleteInput, CompleteOutput, ModelAdapter } from './types.js';
 
 /**
- * Shells out to `gemini -p` for local development. Local-dev only — the
- * factory refuses this adapter inside GitHub Actions runners.
+ * Shells out to `gemini -p <prompt>` for local development. The gemini CLI
+ * takes the prompt as the argument to -p (not stdin). Loading noise goes
+ * to stderr; the model response goes to stdout.
  *
- * NOTE: `gemini` CLI does not currently expose token usage in its text
- * output. We estimate from char count (~4 chars/token) for bookkeeping.
+ * Local-dev only — the factory refuses this adapter inside GitHub Actions.
  */
 export class GoogleCLIAdapter implements ModelAdapter {
   readonly provider = 'google' as const;
@@ -21,8 +21,10 @@ export class GoogleCLIAdapter implements ModelAdapter {
   async complete(input: CompleteInput): Promise<CompleteOutput> {
     const started = Date.now();
     const combined = `${input.system}\n\n---\n\n${input.user}`;
-    const args = ['-p', '-m', this.model];
-    const result = await runCli(this.binary, args, combined);
+    // gemini -p takes the prompt as a positional argument. Text output
+    // goes to stdout; status/loading noise goes to stderr.
+    const args = ['-p', combined, '-m', this.model];
+    const result = await runCli(this.binary, args);
     const text = result.stdout.trim();
     const inputTokens = Math.ceil(combined.length / 4);
     const outputTokens = Math.ceil(text.length / 4);
@@ -45,9 +47,11 @@ interface CliResult {
   exitCode: number;
 }
 
-function runCli(bin: string, args: string[], stdin: string): Promise<CliResult> {
+function runCli(bin: string, args: string[]): Promise<CliResult> {
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    // Use shell:false + explicit args to avoid quoting issues. ARG_MAX on
+    // macOS is 256KB which covers our 120KB code-context cap.
+    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d: Buffer) => {
@@ -62,11 +66,9 @@ function runCli(bin: string, args: string[], stdin: string): Promise<CliResult> 
         resolvePromise({ stdout, stderr, exitCode: 0 });
       } else {
         rejectPromise(
-          new Error(`CLI ${bin} exited ${code ?? 'null'}: ${stderr || stdout || '(no output)'}`),
+          new Error(`CLI ${bin} exited ${code ?? 'null'}: ${stderr.slice(-500) || stdout.slice(-500) || '(no output)'}`),
         );
       }
     });
-    child.stdin.write(stdin);
-    child.stdin.end();
   });
 }
