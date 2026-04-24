@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { estimateCost } from '../util/cost.js';
+import { withRetry } from '../util/retry.js';
 import type { CompleteInput, CompleteOutput, ModelAdapter } from './types.js';
 
 export class GoogleAPIAdapter implements ModelAdapter {
@@ -30,7 +31,11 @@ export class GoogleAPIAdapter implements ModelAdapter {
       },
       requestOptions,
     );
-    const response = await gen.generateContent(input.user);
+    const response = await withRetry(() => gen.generateContent(input.user), {
+      label: `google/${this.model}`,
+      maxAttempts: 3,
+      initialDelayMs: 1500,
+    });
     const text = response.response.text();
     const usageMeta = response.response.usageMetadata;
     const inputTokens = usageMeta?.promptTokenCount ?? 0;
