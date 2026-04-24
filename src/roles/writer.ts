@@ -29,6 +29,39 @@ export interface WriterRunOutput {
 
 const SYSTEM_PREAMBLE = `You are a senior software engineer applying security fixes to existing code. You MUST NOT introduce features; you fix only the issues listed. You return the COMPLETE updated content of each modified file. You preserve all existing functionality and style.`;
 
+/**
+ * Writer models occasionally emit control characters (notably NUL / U+0000)
+ * in regex character classes or escape sequences — e.g. `/\0.jpg$/` where they
+ * meant `/\.jpg$/`. NUL bytes break downstream tooling hard: Node.js refuses
+ * to spawn processes with NUL in argv (fails the next reviewer), many shells
+ * truncate the string at NUL, and PR diffs silently drop NULs. Replace any
+ * NUL with a visible placeholder so the file stays text-safe and any
+ * resulting syntax error is easy for a human reviewer to spot.
+ *
+ * Other ASCII control characters (except tab \t, newline \n, carriage return
+ * \r) are also stripped — they serve no purpose in source code and can
+ * cause similar downstream issues with terminals and diffs.
+ */
+function sanitizeWriterContent(content: string, file: string): string {
+  if (!content.match(/[\x00-\x08\x0B\x0C\x0E-\x1F]/)) return content;
+  let nulls = 0;
+  let others = 0;
+  const cleaned = content.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, (ch) => {
+    if (ch === '\x00') {
+      nulls++;
+      return '�'; // Unicode REPLACEMENT CHARACTER — highly visible
+    }
+    others++;
+    return '';
+  });
+  log.warn(
+    `Writer output for ${file} contained ${nulls} NUL byte(s)${
+      others > 0 ? ` and ${others} other control character(s)` : ''
+    } — sanitized before write.`,
+  );
+  return cleaned;
+}
+
 const OUTPUT_CONTRACT = `
 OUTPUT CONTRACT (MANDATORY):
 Return ONLY a JSON object of the shape:
@@ -92,8 +125,9 @@ ${findingsList}`;
     const filesChanged: string[] = [];
     for (const c of changes) {
       if (!c.file || typeof c.content !== 'string') continue;
+      const sanitized = sanitizeWriterContent(c.content, c.file);
       const target = join(root, c.file);
-      await writeFileSafe(target, c.content);
+      await writeFileSafe(target, sanitized);
       filesChanged.push(c.file);
     }
     return {
