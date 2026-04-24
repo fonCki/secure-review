@@ -9,56 +9,123 @@ export interface PrPostOptions {
   prNumber: number;
   commitSha: string;
   token: string;
-  /** Only post comments on files that are in the PR diff. */
-  changedFiles: Set<string>;
+  /**
+   * Map of changed-file path → Set of new-file line numbers that are valid
+   * anchor points for a PR review comment (i.e. lines that appear in the
+   * diff hunks, either added or context). GitHub's pulls/{n}/reviews endpoint
+   * refuses comments on any line outside this set with 422 "Line could not
+   * be resolved" — so we must filter findings before posting.
+   */
+  commentableLines: Map<string, Set<number>>;
+}
+
+export interface PrPostResult {
+  inlineCount: number;
+  summaryOnlyCount: number;
+  criticalOnDiff: number;
 }
 
 /**
- * Posts the aggregated findings as a single GitHub PR review with
- * line-anchored comments. Comments are posted only for files that are
- * part of the PR diff (to avoid surfacing findings in unchanged files).
+ * Posts the aggregated findings as a single GitHub PR review.
+ *
+ * Findings that land on a line present in the PR diff become line-anchored
+ * inline comments. Findings in changed files but on lines outside the diff
+ * (i.e. pre-existing issues in files the PR touches elsewhere) are listed
+ * in the summary body instead of being posted inline — if we tried to post
+ * them inline, GitHub would reject the whole review with 422 and the tool
+ * would crash.
+ *
+ * Findings in files the PR doesn't touch at all are dropped (noise).
  */
-export async function postPrReview(output: ReviewModeOutput, opts: PrPostOptions): Promise<void> {
+export async function postPrReview(
+  output: ReviewModeOutput,
+  opts: PrPostOptions,
+): Promise<PrPostResult> {
   const octokit = new Octokit({ auth: opts.token });
 
-  const inScope = output.findings.filter((f) => opts.changedFiles.has(f.file));
-  const outOfScope = output.findings.length - inScope.length;
+  const inDiff: Finding[] = [];
+  const outOfDiffInTouchedFiles: Finding[] = [];
+  let droppedOutsideTouchedFiles = 0;
 
-  const body = buildSummary(output, outOfScope);
-
-  if (inScope.length === 0) {
-    await octokit.pulls.createReview({
-      owner: opts.owner,
-      repo: opts.repo,
-      pull_number: opts.prNumber,
-      commit_id: opts.commitSha,
-      event: 'COMMENT',
-      body,
-    });
-    log.info('No findings on changed files — summary-only review posted.');
-    return;
+  for (const f of output.findings) {
+    const lineSet = opts.commentableLines.get(f.file);
+    if (!lineSet) {
+      droppedOutsideTouchedFiles++;
+      continue;
+    }
+    // Try the starting line first, then each line in the reported range,
+    // so a finding that spans across a hunk boundary can still anchor on
+    // a commentable line rather than get pushed to the summary.
+    const anchorLine = pickAnchorLine(f, lineSet);
+    if (anchorLine !== null) {
+      inDiff.push({ ...f, lineStart: anchorLine });
+    } else {
+      outOfDiffInTouchedFiles.push(f);
+    }
   }
 
-  const comments = inScope.map((f) => ({
+  const body = buildSummary(output, {
+    inlineCount: inDiff.length,
+    outOfDiffInTouchedFiles,
+    droppedOutsideTouchedFiles,
+  });
+
+  const comments = inDiff.map((f) => ({
     path: f.file,
     line: Math.max(1, f.lineStart),
     side: 'RIGHT' as const,
     body: renderComment(f),
   }));
 
-  await octokit.pulls.createReview({
+  const reviewParams: Parameters<typeof octokit.pulls.createReview>[0] = {
     owner: opts.owner,
     repo: opts.repo,
     pull_number: opts.prNumber,
     commit_id: opts.commitSha,
     event: 'COMMENT',
     body,
-    comments,
-  });
-  log.success(`Posted ${inScope.length} comments to ${opts.owner}/${opts.repo}#${opts.prNumber}`);
+  };
+  if (comments.length > 0) reviewParams.comments = comments;
+
+  await octokit.pulls.createReview(reviewParams);
+
+  if (inDiff.length > 0) {
+    log.success(`Posted ${inDiff.length} inline comment(s) to ${opts.owner}/${opts.repo}#${opts.prNumber}`);
+  }
+  if (outOfDiffInTouchedFiles.length > 0) {
+    log.info(
+      `${outOfDiffInTouchedFiles.length} pre-existing finding(s) on changed files moved to summary (lines outside PR diff)`,
+    );
+  }
+  if (droppedOutsideTouchedFiles > 0) {
+    log.info(`${droppedOutsideTouchedFiles} finding(s) in untouched files omitted`);
+  }
+
+  const criticalOnDiff = inDiff.filter((f) => f.severity === 'CRITICAL').length;
+  return {
+    inlineCount: inDiff.length,
+    summaryOnlyCount: outOfDiffInTouchedFiles.length,
+    criticalOnDiff,
+  };
 }
 
-function buildSummary(output: ReviewModeOutput, outOfScope: number): string {
+function pickAnchorLine(f: Finding, lineSet: Set<number>): number | null {
+  if (lineSet.has(f.lineStart)) return f.lineStart;
+  // Scan the reported range if we have a meaningful lineEnd
+  const end = Math.max(f.lineStart, f.lineEnd ?? f.lineStart);
+  for (let n = f.lineStart + 1; n <= end; n++) {
+    if (lineSet.has(n)) return n;
+  }
+  return null;
+}
+
+interface SummaryContext {
+  inlineCount: number;
+  outOfDiffInTouchedFiles: Finding[];
+  droppedOutsideTouchedFiles: number;
+}
+
+function buildSummary(output: ReviewModeOutput, ctx: SummaryContext): string {
   const b = output.breakdown;
   const reviewerList = output.perReviewer
     .map((r) => `- **${r.reviewer}**: ${r.findings.length} findings${r.error ? ` (⚠️ ${r.error})` : ''}`)
@@ -67,9 +134,28 @@ function buildSummary(output: ReviewModeOutput, outOfScope: number): string {
 - **eslint**: ${output.sast.eslint.ran ? output.sast.eslint.count : 'skipped'}
 - **npm-audit**: ${output.sast.npmAudit.ran ? output.sast.npmAudit.count : 'skipped'}`;
 
+  const preexistingBlock =
+    ctx.outOfDiffInTouchedFiles.length > 0
+      ? `\n### Pre-existing findings on changed files (not in diff)\n\n${ctx.outOfDiffInTouchedFiles
+          .map(
+            (f) =>
+              `- **${f.severity}** · \`${f.file}:${f.lineStart}\` · ${f.title}${
+                f.cwe ? ` _(${f.cwe})_` : ''
+              }`,
+          )
+          .join('\n')}\n`
+      : '';
+
+  const droppedNote =
+    ctx.droppedOutsideTouchedFiles > 0
+      ? `\n> ${ctx.droppedOutsideTouchedFiles} finding(s) in files not modified by this PR were omitted.\n`
+      : '';
+
   return `## 🔒 Secure Review — multi-model security audit
 
-**Findings:** ${output.findings.length}  ·  **Cost:** $${output.totalCostUSD.toFixed(3)}  ·  **Duration:** ${(output.totalDurationMs / 1000).toFixed(1)}s
+**Findings:** ${output.findings.length} (${ctx.inlineCount} inline${
+    ctx.outOfDiffInTouchedFiles.length > 0 ? `, ${ctx.outOfDiffInTouchedFiles.length} pre-existing` : ''
+  })  ·  **Cost:** $${output.totalCostUSD.toFixed(3)}  ·  **Duration:** ${(output.totalDurationMs / 1000).toFixed(1)}s
 
 | CRITICAL | HIGH | MEDIUM | LOW | INFO |
 |---:|---:|---:|---:|---:|
@@ -80,8 +166,7 @@ ${reviewerList}
 
 ### SAST
 ${sastList}
-
-${outOfScope > 0 ? `\n> ${outOfScope} finding(s) were in files not modified by this PR and are omitted.\n` : ''}
+${preexistingBlock}${droppedNote}
 <sub>Generated by [secure-review](https://github.com/fonCki/secure-review) · multi-model security review for AI-generated code</sub>`;
 }
 

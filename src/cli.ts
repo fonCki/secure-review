@@ -161,8 +161,15 @@ async function main(): Promise<void> {
           pull_number: pr.number,
           per_page: 300,
         });
-        const changedFiles = new Set(filesResp.data.map((f) => f.filename));
-        log.info(`PR #${pr.number} — ${changedFiles.size} changed files`);
+        const { commentableLinesByFile } = await import('./util/diff.js');
+        const commentableLines = commentableLinesByFile(filesResp.data);
+        const totalCommentable = Array.from(commentableLines.values()).reduce(
+          (n, s) => n + s.size,
+          0,
+        );
+        log.info(
+          `PR #${pr.number} — ${commentableLines.size} changed files, ${totalCommentable} diff-commentable lines`,
+        );
 
         const output = await runReviewMode({
           root: process.cwd(),
@@ -171,19 +178,19 @@ async function main(): Promise<void> {
           env,
         });
 
-        await postPrReview(output, {
+        const prResult = await postPrReview(output, {
           owner,
           repo,
           prNumber: pr.number,
           commitSha: pr.head.sha,
           token,
-          changedFiles,
+          commentableLines,
         });
 
-        const inScope = output.findings.filter((f) => changedFiles.has(f.file));
-        const criticalInScope = inScope.filter((f) => f.severity === 'CRITICAL').length;
-        if (config.gates.block_on_new_critical && criticalInScope > 0) {
-          log.error(`${criticalInScope} CRITICAL finding(s) on changed files — failing check`);
+        if (config.gates.block_on_new_critical && prResult.criticalOnDiff > 0) {
+          log.error(
+            `${prResult.criticalOnDiff} CRITICAL finding(s) on diff lines — failing check`,
+          );
           process.exit(2);
         }
       } catch (err) {

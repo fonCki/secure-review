@@ -16,14 +16,20 @@ export class GoogleAPIAdapter implements ModelAdapter {
 
   async complete(input: CompleteInput): Promise<CompleteOutput> {
     const started = Date.now();
-    const gen = this.client.getGenerativeModel({
-      model: this.model,
-      systemInstruction: input.system,
-      generationConfig: {
-        maxOutputTokens: input.maxTokens ?? 16_000,
-        ...(input.jsonMode ? { responseMimeType: 'application/json' } : {}),
+    const requestOptions = process.env.GOOGLE_BASE_URL
+      ? { baseUrl: process.env.GOOGLE_BASE_URL }
+      : undefined;
+    const gen = this.client.getGenerativeModel(
+      {
+        model: this.model,
+        systemInstruction: input.system,
+        generationConfig: {
+          maxOutputTokens: input.maxTokens ?? 16_000,
+          ...(input.jsonMode ? { responseMimeType: 'application/json' } : {}),
+        },
       },
-    });
+      requestOptions,
+    );
     const response = await gen.generateContent(input.user);
     const text = response.response.text();
     const usageMeta = response.response.usageMetadata;
