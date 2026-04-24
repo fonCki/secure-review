@@ -2,7 +2,7 @@
 
 **Multi-model security review for AI-generated code.** CLI and GitHub Action that runs several LLM reviewers (Anthropic, OpenAI, Google) and SAST tools (Semgrep, ESLint, npm audit) against your codebase. Findings are aggregated across reviewers — overlap becomes a confidence signal. Two modes: `review` (report only, PR comments) and `fix` (writer applies fixes in a cross-model rotating loop).
 
-Built for the ETH Case Studies seminar *"Secure Code despite AI"* (252-3811-00L). The design is informed by 96 experimental runs showing that (1) SAST alone is nearly blind to AI-generated code, and (2) same-model self-review loops regress in the majority of runs. The tool operationalizes the cross-model-review pattern the industry uses informally.
+Built for the ETH Case Studies seminar *"Secure Code despite AI"* (252-3811-00L). The design is grounded in recent LLM-security research showing that (1) SAST alone is nearly blind to AI-generated code, and (2) same-model self-review loops often regress (see *Research context* below). The tool operationalizes the cross-model-review pattern the industry uses informally.
 
 ## Why this, not GitHub Copilot PR review?
 
@@ -13,7 +13,7 @@ Built for the ETH Case Studies seminar *"Secure Code despite AI"* (252-3811-00L)
 | Agreement signal across models | No | Yes |
 | SAST integrated with AI | No | Yes (Semgrep + ESLint + npm audit) |
 | Provider-agnostic | No (Copilot only) | Yes |
-| Empirical justification | Marketing | 96-run experiment, published |
+| Empirical justification | Marketing | Grounded in LLM-security research (see below) |
 
 ## Quick start — CLI
 
@@ -135,7 +135,7 @@ secure-review fix ./src --max-iterations 3 --max-cost-usd 20
 3. Gates: halts on new-critical-introduced, cost cap, or wall-time cap.
 4. Final verification pass by all reviewers.
 
-This is the *Condition F* experimental design that extends Condition C of the seminar experiment (same-model loop → cross-model loop).
+This is the cross-model rotating loop: each iteration a different reviewer audits the writer's output, reducing the blind-spot overlap you get from single-model self-review.
 
 ### `pr` — GitHub Action entrypoint
 
@@ -183,9 +183,9 @@ Runs Semgrep + ESLint + npm audit with the same normalization as the AI reviewer
 └────────────────────────────────────────────┘
 ```
 
-## Evidence JSON — Condition-D-compatible
+## Evidence JSON
 
-Output JSON matches the field shape of `secure-code-despite-ai/scanning/results/*conditionD*.json`:
+Every run emits a self-contained JSON with per-iteration counts and severity breakdowns — suitable for plotting, diffing across runs, or feeding into dashboards:
 
 ```json
 {
@@ -204,7 +204,7 @@ Output JSON matches the field shape of `secure-code-despite-ai/scanning/results/
 }
 ```
 
-Plot Condition F runs directly alongside existing Condition C / D baselines with zero adapter code.
+The same JSON is produced by both `review` and `fix` modes — a single schema for the whole tool.
 
 ## Developing
 
