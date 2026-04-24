@@ -1,34 +1,32 @@
 import { z } from 'zod';
+import { jsonrepair } from 'jsonrepair';
 import { FindingSchema, type Finding, type Severity } from './schema.js';
 
 /**
  * Extract JSON from a model response. Models often wrap JSON in prose or
- * markdown fences; we tolerate both.
+ * markdown fences; we tolerate both. As a final fallback we try
+ * `jsonrepair` which can fix single-quoted strings, trailing commas,
+ * truncated arrays, unescaped newlines in strings, and other common
+ * model-generated JSON flaws.
  */
 export function extractJson(text: string): unknown {
   const trimmed = text.trim();
 
-  // Already JSON
+  // Strategy 1 — already JSON
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-    try {
-      return JSON.parse(trimmed);
-    } catch {
-      // fall through to fence detection
-    }
+    const tried = tryParse(trimmed);
+    if (tried !== undefined) return tried;
   }
 
-  // Fenced code block ```json ... ``` or ``` ... ```
-  const fenceRe = /```(?:json|JSON)?\s*\n([\s\S]*?)\n```/;
+  // Strategy 2 — fenced code block ```json ... ``` or ``` ... ```
+  const fenceRe = /```(?:json|JSON)?\s*\n?([\s\S]*?)\n?```/;
   const match = fenceRe.exec(trimmed);
   if (match?.[1]) {
-    try {
-      return JSON.parse(match[1]);
-    } catch {
-      // fall through
-    }
+    const tried = tryParse(match[1]);
+    if (tried !== undefined) return tried;
   }
 
-  // First {...} block or [...] block in the text
+  // Strategy 3 — first {...} or [...] block (outer brace match)
   const objStart = trimmed.indexOf('{');
   const arrStart = trimmed.indexOf('[');
   const start =
@@ -38,15 +36,35 @@ export function extractJson(text: string): unknown {
     const close = open === '{' ? '}' : ']';
     const end = trimmed.lastIndexOf(close);
     if (end > start) {
-      const candidate = trimmed.slice(start, end + 1);
-      try {
-        return JSON.parse(candidate);
-      } catch {
-        // give up
-      }
+      const tried = tryParse(trimmed.slice(start, end + 1));
+      if (tried !== undefined) return tried;
     }
   }
+
+  // Strategy 4 — jsonrepair, but only if we actually have brace/bracket
+  // content to repair. Without structural brackets we'd be "repairing"
+  // free text into a meaningless string literal.
+  if (start >= 0) {
+    try {
+      const repaired = jsonrepair(trimmed.slice(start));
+      const parsed = JSON.parse(repaired) as unknown;
+      if (parsed !== null && (typeof parsed === 'object')) {
+        return parsed;
+      }
+    } catch {
+      // final fallthrough
+    }
+  }
+
   throw new Error(`No parseable JSON in model response (${trimmed.length} chars)`);
+}
+
+function tryParse(s: string): unknown | undefined {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

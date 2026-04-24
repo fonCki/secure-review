@@ -56,3 +56,25 @@ describe('parseFindings', () => {
     expect(out).toHaveLength(1);
   });
 });
+
+describe('extractJson — jsonrepair fallback', () => {
+  it('repairs single-quoted strings', () => {
+    const got = extractJson("{'findings': [{'title': 'x'}]}");
+    expect(got).toEqual({ findings: [{ title: 'x' }] });
+  });
+
+  it('repairs trailing commas', () => {
+    const got = extractJson('{"findings": [{"title": "x"},]}');
+    expect(got).toEqual({ findings: [{ title: 'x' }] });
+  });
+
+  it('repairs truncated output (missing closing brace)', () => {
+    const got = extractJson('{"findings": [{"title": "x"}');
+    expect(got).toEqual({ findings: [{ title: 'x' }] });
+  });
+
+  it('handles prose prefix + JSON + prose suffix', () => {
+    const got = extractJson('Here is my review:\n\n{"findings": [{"title": "x"}]}\n\nThat concludes my analysis.');
+    expect(got).toEqual({ findings: [{ title: 'x' }] });
+  });
+});
