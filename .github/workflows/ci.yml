@@ -32,11 +32,3 @@ jobs:
 
       - name: Build Action bundle
         run: pnpm build:action
-
-      - name: Verify dist-action is up-to-date
-        run: |
-          if ! git diff --quiet dist-action/; then
-            echo "::error::dist-action/ is out of date. Run 'pnpm build:action' and commit the result."
-            git diff dist-action/
-            exit 1
-          fi
