@@ -12,13 +12,21 @@ import { writeFileSafe } from './util/files.js';
 import { log, setQuiet, setVerbose } from './util/logger.js';
 
 async function readPackageVersion(): Promise<string> {
-  const pkgPath = resolve(process.cwd(), 'package.json');
-  try {
-    const meta = JSON.parse(await readFile(pkgPath, 'utf8')) as { version?: string };
-    return meta.version ?? '0.1.0';
-  } catch {
-    return '0.1.0';
+  // Read OUR package.json next to dist/, NOT the user's CWD package.json.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(here, '..', 'package.json'),
+    resolve(here, '..', '..', 'package.json'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const meta = JSON.parse(await readFile(candidate, 'utf8')) as { name?: string; version?: string };
+      if (meta.name === 'secure-review' && meta.version) return meta.version;
+    } catch {
+      // try next
+    }
   }
+  return '0.0.0';
 }
 
 async function main(): Promise<void> {
