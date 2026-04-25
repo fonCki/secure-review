@@ -47,6 +47,7 @@
   "scripts": {
     "build": "tsup",
     "build:action": "ncc build src/cli.ts -o dist-action --minify --source-map",
+    "prepare": "[ -d dist ] || tsup",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
