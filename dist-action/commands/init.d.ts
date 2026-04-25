@@ -8,7 +8,6 @@ export interface InitAnswers {
     useGoogle: boolean;
     enableSast: boolean;
     writeKeys: boolean;
-    useLlmProxy: boolean;
     anthropicKey?: string;
     openaiKey?: string;
     googleKey?: string;
