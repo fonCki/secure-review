@@ -4,6 +4,7 @@ import { generateConfig, generateEnv, type InitAnswers } from '../src/commands/i
 const all: InitAnswers = {
   useAnthropic: true, useOpenAI: true, useGoogle: true,
   enableSast: true, writeKeys: false,
+  useLlmProxy: false,
 };
 
 describe('init generators', () => {
