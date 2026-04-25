@@ -111,40 +111,76 @@ ${codeContext}
 FINDINGS TO FIX:
 ${findingsList}`;
 
-  try {
-    const response = await adapter.complete({
-      system,
-      user,
-      jsonMode: true,
-      maxTokens: writer.maxTokens ?? 16_000,
-    });
-    const parsed = extractJson(response.text) as {
-      changes?: Array<{ file: string; content: string }>;
-    };
-    const changes = parsed.changes ?? [];
-    const filesChanged: string[] = [];
-    for (const c of changes) {
-      if (!c.file || typeof c.content !== 'string') continue;
-      const sanitized = sanitizeWriterContent(c.content, c.file);
-      const target = join(root, c.file);
-      await writeFileSafe(target, sanitized);
-      filesChanged.push(c.file);
+  // Try the model up to twice. The first attempt uses the normal prompt;
+  // if the response isn't parseable JSON, retry once with a stricter
+  // reminder appended. Empirically, Sonnet sometimes wraps its JSON in
+  // prose ("Sure, here's the fix...") despite the OUTPUT_CONTRACT —
+  // the second attempt with explicit "JSON ONLY, no prose" wording usually
+  // succeeds. Cost: at most one extra LLM call per failed iteration.
+  let totalUsage = { inputTokens: 0, outputTokens: 0, costUSD: 0 };
+  let lastRawText = '';
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const userForAttempt =
+      attempt === 1
+        ? user
+        : `${user}\n\nPREVIOUS RESPONSE WAS NOT VALID JSON. You MUST return ONLY a JSON object starting with { and ending with }. NO prose. NO markdown fences. NO explanation. JUST the JSON.`;
+    try {
+      const response = await adapter.complete({
+        system,
+        user: userForAttempt,
+        jsonMode: true,
+        maxTokens: writer.maxTokens ?? 16_000,
+      });
+      lastRawText = response.text;
+      totalUsage = {
+        inputTokens: totalUsage.inputTokens + response.usage.inputTokens,
+        outputTokens: totalUsage.outputTokens + response.usage.outputTokens,
+        costUSD: totalUsage.costUSD + response.usage.costUSD,
+      };
+      const parsed = extractJson(response.text) as {
+        changes?: Array<{ file: string; content: string }>;
+      };
+      const changes = parsed.changes ?? [];
+      const filesChanged: string[] = [];
+      for (const c of changes) {
+        if (!c.file || typeof c.content !== 'string') continue;
+        const sanitized = sanitizeWriterContent(c.content, c.file);
+        const target = join(root, c.file);
+        await writeFileSafe(target, sanitized);
+        filesChanged.push(c.file);
+      }
+      if (attempt === 2) {
+        log.info(`Writer retry succeeded on attempt 2 (parsed JSON correctly).`);
+      }
+      return {
+        filesChanged,
+        rawText: response.text,
+        usage: totalUsage,
+        durationMs: Date.now() - started,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const isParseError = message.includes('No parseable JSON');
+      if (attempt === 1 && isParseError) {
+        log.warn(`Writer attempt 1 unparseable (${lastRawText.length} chars) — retrying with stricter prompt...`);
+        continue;
+      }
+      log.warn(`Writer failed: ${message}`);
+      return {
+        filesChanged: [],
+        rawText: lastRawText,
+        usage: totalUsage,
+        durationMs: Date.now() - started,
+        error: message,
+      };
     }
-    return {
-      filesChanged,
-      rawText: response.text,
-      usage: response.usage,
-      durationMs: Date.now() - started,
-    };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    log.warn(`Writer failed: ${message}`);
-    return {
-      filesChanged: [],
-      rawText: '',
-      usage: { inputTokens: 0, outputTokens: 0, costUSD: 0 },
-      durationMs: Date.now() - started,
-      error: message,
-    };
   }
+  // Defensive fallthrough — TypeScript doesn't know the loop always returns.
+  return {
+    filesChanged: [],
+    rawText: lastRawText,
+    usage: totalUsage,
+    durationMs: Date.now() - started,
+    error: 'Writer exhausted retries',
+  };
 }

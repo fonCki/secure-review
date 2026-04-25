@@ -14,11 +14,23 @@ export interface RetryOptions {
  */
 export function isTransientProviderError(err: unknown): boolean {
   if (!err) return false;
-  const anyErr = err as { status?: number; code?: string; message?: string };
+  const anyErr = err as {
+    status?: number;
+    code?: string;
+    message?: string;
+    cause?: unknown;
+  };
   const status = anyErr.status;
   if (typeof status === 'number' && (status === 429 || (status >= 500 && status < 600))) return true;
   const code = anyErr.code ?? '';
-  if (['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'].includes(code)) return true;
+  if (
+    ['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE', 'ECONNABORTED'].includes(code)
+  )
+    return true;
+  // Node global fetch (undici) wraps the real network error in `cause`. Without
+  // peeking through it we'd miss legitimate transient TCP errors that surface
+  // only as a top-level "fetch failed".
+  if (anyErr.cause && isTransientProviderError(anyErr.cause)) return true;
   const msg = (anyErr.message ?? '').toLowerCase();
   return (
     msg.includes('503') ||
@@ -28,7 +40,16 @@ export function isTransientProviderError(err: unknown): boolean {
     msg.includes('rate limit') ||
     msg.includes('high demand') ||
     msg.includes('temporarily') ||
-    msg.includes('timeout')
+    msg.includes('timeout') ||
+    // Network-layer transients seen in practice (Node fetch / undici / SDKs):
+    msg.includes('fetch failed') ||
+    msg.includes('connect timeout') ||
+    msg.includes('socket hang up') ||
+    msg.includes('network error') ||
+    msg.includes('econnreset') ||
+    msg.includes('econnrefused') ||
+    msg.includes('econnaborted') ||
+    msg.includes('etimedout')
   );
 }
 

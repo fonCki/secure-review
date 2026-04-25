@@ -2,6 +2,30 @@
 
 All notable changes to `secure-review`. Newest first.
 
+## [0.5.2] — 2026-04-25
+
+### Anthropic prefill `{` for JSON-mode (Bug #11 hard fix)
+
+The Anthropic API has no native "structured output" flag, so previously when the writer was set to a Claude model, ~60-70% of responses contained prose around the JSON ("Sure, here's the fix..." then JSON, or sometimes just prose with no JSON at all). The 4-strategy parser couldn't recover and the writer changed 0 files.
+
+`src/adapters/anthropic-api.ts` now prepends an `{ role: 'assistant', content: '{' }` turn to the request when `jsonMode=true`. The model literally cannot emit prose because it has to continue from inside an open JSON object. We re-prepend `{` to the response text so the parser sees a complete object.
+
+Empirical: validation run with Sonnet writer went from **0/3 successful writer attempts → 2/3 successful**. The remaining failure is recovered by the next layer.
+
+### Writer retry on parse failure (Bug #11 fallback)
+
+`src/roles/writer.ts` now retries the LLM call ONCE with an explicit "PREVIOUS RESPONSE WAS NOT VALID JSON. Return ONLY a JSON object. NO prose. NO markdown fences." appended when `extractJson` fails on attempt 1. Cost: at most one extra LLM call per failed iteration.
+
+### Transient-error classifier extended
+
+`src/util/retry.ts` now classifies these as retriable (was missing them, so a `fetch failed` from a llm-proxy hiccup or extension cold-start would fail the whole run instead of retrying):
+
+- Error codes: `EPIPE`, `ECONNABORTED`
+- Message patterns: `fetch failed`, `connect timeout`, `socket hang up`, `network error`, `econnreset`, `econnrefused`, `econnaborted`, `etimedout`
+- Now also peeks through `err.cause` (Node global fetch / undici wraps the real network error there)
+
+---
+
 ## [0.5.1] — 2026-04-25
 
 ### Live progress spinner during long-running operations
