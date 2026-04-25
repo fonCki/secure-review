@@ -37,6 +37,21 @@ async function main(): Promise<void> {
     });
 
   program
+    .command('init')
+    .description('Scaffold .secure-review.yml + .env in the current directory.')
+    .option('-y, --yes', 'skip questions, accept defaults (all 3 providers + SAST + .env.example)', false)
+    .option('-f, --force', 'overwrite existing .secure-review.yml', false)
+    .action(async (opts: { yes: boolean; force: boolean }) => {
+      try {
+        const { runInit } = await import('./commands/init.js');
+        await runInit({ yes: opts.yes, force: opts.force });
+      } catch (err) {
+        log.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
+  program
     .command('review')
     .description('Run multi-model review on a path. Posts no changes.')
     .argument('<path>', 'path to review')
