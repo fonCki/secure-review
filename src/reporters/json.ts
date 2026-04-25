@@ -79,6 +79,15 @@ export function renderFixEvidence(out: FixModeOutput, opts: JsonReportOptions): 
     per_iteration: out.iterations.map((it) => ({
       iteration: it.iteration,
       reviewer: it.reviewer,
+      // 0.5.0+ semantics:
+      //   verifier        — the model that audited this iteration's writer output
+      //   findings_in     — what the writer was asked to fix this iteration
+      //   findings_out    — what the verifier saw after the writer ran
+      //   findings_found  — kept as alias for findings_in for backward compat
+      verifier: it.reviewer,
+      findings_in: it.findingsBefore.length,
+      findings_out: it.findingsAfter.length,
+      findings_resolved: it.resolved,
       findings_found: it.findingsBefore.length,
       findings_severity: severityBreakdown(it.findingsBefore),
       cost_usd: Math.round(it.costUSD * 1000) / 1000,

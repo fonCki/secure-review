@@ -68,7 +68,7 @@ export function renderFixReport(output: FixModeOutput): string {
   if (output.iterations.length === 0) {
     parts.push('_No iterations executed._');
   } else {
-    parts.push('| # | Reviewer | Before | After | Resolved | Introduced (CRITICAL) | Cost (USD) |');
+    parts.push('| # | Verifier | Findings In | Findings Out | Resolved | Introduced (CRITICAL) | Cost (USD) |');
     parts.push('|---:|---|---:|---:|---:|---:|---:|');
     for (const it of output.iterations) {
       const introduced = it.findingsAfter.length - (it.findingsBefore.length - it.resolved);
@@ -76,6 +76,10 @@ export function renderFixReport(output: FixModeOutput): string {
         `| ${it.iteration} | ${it.reviewer} | ${it.findingsBefore.length} | ${it.findingsAfter.length} | ${it.resolved} | ${Math.max(0, introduced)} (${it.newCritical}) | ${it.costUSD.toFixed(3)} |`,
       );
     }
+    parts.push('');
+    parts.push(
+      '> _Findings In_ = what the writer addressed this iteration (union of initial readers for iter 1, previous verifier\'s audit for iter 2+). _Findings Out_ = what the rotating verifier saw after the writer ran.',
+    );
   }
   parts.push('');
 
