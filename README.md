@@ -24,6 +24,8 @@ npx secure-review init        # interactive scaffold: .secure-review.yml + .env
 npx secure-review review ./src
 ```
 
+`.env` in the current directory is auto-loaded — no `source .env` needed.
+
 `init` asks a few yes/no questions (which providers, enable SAST, enter keys now or later) and drops a working config + env file. Use `--yes` to skip the prompts and accept all defaults.
 
 ### Other CLI subcommands

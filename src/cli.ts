@@ -1,7 +1,19 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+// Auto-load .env from CWD if present. Saves users from
+// 'set -a; source .env; set +a' before every invocation.
+// process.loadEnvFile is a built-in Node 20.12+ API — no extra dependency.
+if (existsSync('.env')) {
+  try {
+    process.loadEnvFile('.env');
+  } catch {
+    // older Node, or malformed .env — fall back silently
+  }
+}
 import { Command } from 'commander';
 import { loadConfig, loadEnv } from './config/load.js';
 import { runReviewMode } from './modes/review.js';
