@@ -18,12 +18,23 @@ Built for the ETH Case Studies seminar *"Secure Code despite AI"* (252-3811-00L)
 ## Quick start — CLI
 
 ```bash
-pnpm add -D secure-review
-cp node_modules/secure-review/examples/.secure-review.yml .
-cp node_modules/secure-review/.env.example .env
-# edit .env — set API keys
-secure-review review ./src
+npm install --save-dev secure-review
+npx secure-review init        # interactive scaffold: .secure-review.yml + .env
+# edit .env — paste your API keys (or skip this step if you set --yes during init)
+npx secure-review review ./src
 ```
+
+`init` asks a few yes/no questions (which providers, enable SAST, enter keys now or later) and drops a working config + env file. Use `--yes` to skip the prompts and accept all defaults.
+
+### Other CLI subcommands
+
+| Command | Purpose |
+|---|---|
+| `secure-review init` | Scaffold `.secure-review.yml` + `.env` (interactive) |
+| `secure-review scan <path>` | SAST only — no AI calls, no API keys needed |
+| `secure-review review <path>` | Multi-model review, no file changes |
+| `secure-review fix <path>` | Iterative review → write → re-review loop |
+| `secure-review pr` | GitHub Action entry point (called by the workflow) |
 
 ## Quick start — GitHub Action
 
