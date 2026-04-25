@@ -10,6 +10,7 @@ import { runWriter, type WriterRunOutput } from '../roles/writer.js';
 import { runAllSast } from '../sast/index.js';
 import { readSourceTree } from '../util/files.js';
 import { log } from '../util/logger.js';
+import { spinner } from '../util/spinner.js';
 
 export interface FixModeInput {
   root: string;
@@ -102,18 +103,32 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
 
   // 1) INITIAL UNION SCAN — all readers in parallel + SAST.
   const initialFiles = await readSourceTree(root);
+  const sastSpinner = spinner('Initial scan: SAST (semgrep + eslint + npm-audit)');
   const initialSast = await runAllSast(root, config.sast);
+  sastSpinner.succeed(
+    `Initial SAST: ${initialSast.findings.length} finding${initialSast.findings.length === 1 ? '' : 's'}`,
+  );
+
+  // Live progress bar across the parallel reviewer calls.
+  let completedReviewers = 0;
+  const initSpinner = spinner(`Initial scan: 0/${N} reader${N === 1 ? '' : 's'} done`);
   const initialReviewerRuns = await Promise.all(
-    reviewerInstances.map((r) =>
-      runReviewer({
+    reviewerInstances.map(async (r) => {
+      const result = await runReviewer({
         reviewer: r.ref,
         adapter: r.adapter,
         skill: r.skill,
         files: initialFiles,
         priorFindings: config.sast.inject_into_reviewer_context ? initialSast.findings : undefined,
-      }),
-    ),
+      });
+      completedReviewers += 1;
+      initSpinner.update(
+        `Initial scan: ${completedReviewers}/${N} reader${N === 1 ? '' : 's'} done (last: ${r.ref.name} → ${result.findings.length})`,
+      );
+      return result;
+    }),
   );
+  initSpinner.succeed(`Initial scan complete: ${N} reader${N === 1 ? '' : 's'}`);
   for (const r of initialReviewerRuns) {
     log.info(
       `  initial-scan ${r.reviewer}: ${r.error ? 'FAILED' : `${r.findings.length} findings`} ($${r.usage.costUSD.toFixed(3)}, ${(r.durationMs / 1000).toFixed(1)}s)`,
@@ -152,8 +167,8 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
 
     let writerRun: WriterRunOutput | undefined;
     if (findingsToFix.length > 0) {
-      log.info(
-        `  Writer (${writer.ref.provider}/${writer.ref.model}) fixing ${findingsToFix.length} finding(s)...`,
+      const wSpinner = spinner(
+        `Writer (${writer.ref.provider}/${writer.ref.model}) fixing ${findingsToFix.length} finding(s)`,
       );
       writerRun = await runWriter({
         writer: writer.ref,
@@ -165,8 +180,8 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
       });
       totalCost += writerRun.usage.costUSD;
       writerRun.filesChanged.forEach((f) => allChangedFiles.add(f));
-      log.info(
-        `  Writer changed ${writerRun.filesChanged.length} file(s) ($${writerRun.usage.costUSD.toFixed(3)})`,
+      wSpinner.succeed(
+        `Writer changed ${writerRun.filesChanged.length} file(s) ($${writerRun.usage.costUSD.toFixed(3)})`,
       );
     } else {
       log.info(`  Nothing to fix this iteration — ${verifier.ref.name} will confirm.`);
@@ -175,6 +190,7 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
     // Verifier audits whatever state we're in now (post-writer or unchanged).
     const afterFiles = await readSourceTree(root);
     const sastAfterRun = await runAllSast(root, config.sast);
+    const vSpinner = spinner(`Verifier ${verifier.ref.name} auditing post-fix code`);
     const verifierRun = await runReviewer({
       reviewer: verifier.ref,
       adapter: verifier.adapter,
@@ -183,6 +199,9 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
       priorFindings: config.sast.inject_into_reviewer_context ? sastAfterRun.findings : undefined,
     });
     totalCost += verifierRun.usage.costUSD;
+    vSpinner.succeed(
+      `Verifier ${verifier.ref.name}: ${verifierRun.findings.length} finding${verifierRun.findings.length === 1 ? '' : 's'} ($${verifierRun.usage.costUSD.toFixed(3)})`,
+    );
 
     const findingsAfter = aggregate([...verifierRun.findings, ...sastAfterRun.findings]);
     const diff = diffFindings(findingsToFix, findingsAfter);
@@ -252,17 +271,27 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
       config.fix.final_verification === 'all_reviewers'
         ? reviewerInstances
         : [reviewerInstances[0]!];
+    let completedFinal = 0;
+    const finalSpinner = spinner(
+      `Final verification: 0/${verifiers.length} reader${verifiers.length === 1 ? '' : 's'} done`,
+    );
     verification = await Promise.all(
-      verifiers.map((r) =>
-        runReviewer({
+      verifiers.map(async (r) => {
+        const result = await runReviewer({
           reviewer: r.ref,
           adapter: r.adapter,
           skill: r.skill,
           files: finalFiles,
           priorFindings: config.sast.inject_into_reviewer_context ? finalSast.findings : undefined,
-        }),
-      ),
+        });
+        completedFinal += 1;
+        finalSpinner.update(
+          `Final verification: ${completedFinal}/${verifiers.length} reader${verifiers.length === 1 ? '' : 's'} done (last: ${r.ref.name} → ${result.findings.length})`,
+        );
+        return result;
+      }),
     );
+    finalSpinner.succeed(`Final verification complete: ${verifiers.length} reader${verifiers.length === 1 ? '' : 's'}`);
     for (const v of verification) totalCost += v.usage.costUSD;
     const combined = aggregate([
       ...verification.flatMap((v) => v.findings),

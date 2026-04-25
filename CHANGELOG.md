@@ -2,6 +2,25 @@
 
 All notable changes to `secure-review`. Newest first.
 
+## [0.5.1] — 2026-04-25
+
+### Live progress spinner during long-running operations
+
+LLM calls take 10-90s and previously the terminal looked frozen between log lines, making it hard to tell if the tool was working or stalled. Now there's a live braille spinner with elapsed-seconds counter on every long-running step:
+
+- Initial scan: SAST spinner + parallel reviewer-count spinner ("Reviewers: 2/3 done")
+- Each iteration: writer spinner + verifier spinner
+- Final verification: parallel reviewer-count spinner
+
+Behavior:
+- TTY: animated spinner with elapsed time, 80ms redraw cadence
+- Non-TTY (CI, pipes, redirected output): single "started" + "done" lines, no animation, log-friendly
+- `--quiet`: spinner suppressed entirely, only final lines
+
+Zero new dependencies — ~150 lines in `src/util/spinner.ts`.
+
+---
+
 ## [0.5.0] — 2026-04-25
 
 ### Fix-mode loop redesign (semantic change — see notes below)

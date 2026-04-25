@@ -1,4 +1,5 @@
 /* eslint-disable no-console */
+import { setSpinnerQuiet } from './spinner.js';
 
 const COLORS = {
   reset: '\x1b[0m',
@@ -16,6 +17,7 @@ let verbose = false;
 
 export function setQuiet(v: boolean): void {
   quiet = v;
+  setSpinnerQuiet(v);
 }
 export function setVerbose(v: boolean): void {
   verbose = v;

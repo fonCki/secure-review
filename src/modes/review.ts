@@ -7,6 +7,7 @@ import { runReviewer, type ReviewerRunOutput } from '../roles/reviewer.js';
 import { runAllSast, type SastSummary } from '../sast/index.js';
 import { readSourceTree } from '../util/files.js';
 import { log } from '../util/logger.js';
+import { spinner } from '../util/spinner.js';
 
 export interface ReviewModeInput {
   root: string;
@@ -36,9 +37,14 @@ export async function runReviewMode(input: ReviewModeInput): Promise<ReviewModeO
   log.info(`Loaded ${files.length} source files`);
 
   // 2. Run SAST (treat its findings as additional "reviewers")
-  const sast = await runAllSast(root, config.sast);
+  let sast: SastSummary;
   if (config.sast.enabled) {
+    const sastSpinner = spinner('Running SAST (semgrep + eslint + npm-audit)');
+    sast = await runAllSast(root, config.sast);
+    sastSpinner.succeed(`SAST: ${sast.findings.length} finding${sast.findings.length === 1 ? '' : 's'}`);
     logSastSummary(sast);
+  } else {
+    sast = await runAllSast(root, config.sast);
   }
 
   // 3. Build context for reviewers
@@ -72,16 +78,32 @@ async function runReviewers(
   files: Awaited<ReturnType<typeof readSourceTree>>,
   priorFindings: Finding[] | undefined,
 ): Promise<ReviewerRunOutput[]> {
+  const N = config.reviewers.length;
+  const isParallel = config.review.parallel;
+  let completed = 0;
+  const sp = spinner(
+    isParallel
+      ? `Reviewers: 0/${N} done (running in parallel)`
+      : `Reviewers: 0/${N} done (sequential)`,
+  );
   const tasks = config.reviewers.map(async (reviewer) => {
     const adapter = getAdapter({ provider: reviewer.provider, model: reviewer.model }, env);
     const skill = await loadSkill(resolveSkillPath(reviewer.skill, configDir));
     log.debug(`${reviewer.name} → ${reviewer.provider}/${reviewer.model} (${adapter.mode})`);
     const result = await runReviewer({ reviewer, adapter, skill, files, priorFindings });
-    const status = result.error ? 'FAILED' : `${result.findings.length} findings`;
-    log.info(`  ${reviewer.name}: ${status} ($${result.usage.costUSD.toFixed(3)}, ${(result.durationMs / 1000).toFixed(1)}s)`);
+    completed += 1;
+    sp.update(
+      `Reviewers: ${completed}/${N} done (last: ${reviewer.name} → ${result.error ? 'FAILED' : `${result.findings.length} findings`})`,
+    );
     return result;
   });
-  return config.review.parallel ? Promise.all(tasks) : sequential(tasks);
+  const results = isParallel ? await Promise.all(tasks) : await sequential(tasks);
+  sp.succeed(`Reviewers complete: ${N} done`);
+  for (const r of results) {
+    const status = r.error ? 'FAILED' : `${r.findings.length} findings`;
+    log.info(`  ${r.reviewer}: ${status} ($${r.usage.costUSD.toFixed(3)}, ${(r.durationMs / 1000).toFixed(1)}s)`);
+  }
+  return results;
 }
 
 async function sequential<T>(tasks: Array<Promise<T>>): Promise<T[]> {
