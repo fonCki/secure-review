@@ -14,3 +14,4 @@ reports/
 
 # Research experiments live in the private repo fonCki/secure-code-despite-ai
 experiments/
+*.tgz
