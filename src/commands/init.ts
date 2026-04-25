@@ -16,10 +16,14 @@ export interface InitOptions {
   yes?: boolean;
 }
 
+export type ProviderName = 'anthropic' | 'openai' | 'google';
+
 export interface InitAnswers {
   useAnthropic: boolean;
   useOpenAI: boolean;
   useGoogle: boolean;
+  writerProvider: ProviderName;
+  writerModel: string;
   enableSast: boolean;
   writeKeys: boolean;
   anthropicKey?: string;
@@ -27,12 +31,27 @@ export interface InitAnswers {
   googleKey?: string;
 }
 
+// Sensible *strong* defaults for the writer. The writer MODIFIES files,
+// so it's worth spending more on it than on readers (which only report).
+// Reader models stay on the cheapest tier — see READER_MODEL_DEFAULTS.
+export const WRITER_MODEL_DEFAULTS: Record<ProviderName, string> = {
+  anthropic: 'claude-sonnet-4-6',
+  openai: 'gpt-4o',
+  google: 'gemini-2.5-pro',
+};
+
+export const READER_MODEL_DEFAULTS: Record<ProviderName, string> = {
+  anthropic: 'claude-haiku-4-5',
+  openai: 'gpt-4o-mini',
+  google: 'gemini-2.5-flash',
+};
+
 export async function runInit(opts: InitOptions = {}): Promise<void> {
   if (!opts.force) {
     for (const f of ['.secure-review.yml']) {
       if (await fileExists(f)) {
         console.error(
-          `[31m✘[0m Refusing to overwrite ${f}. Pass --force to overwrite, or delete the file first.`,
+          `[31m✘[0m Refusing to overwrite ${f}. Pass --force to overwrite, or delete the file first.`,
         );
         process.exit(1);
       }
@@ -41,7 +60,19 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
 
   const answers = opts.yes ? defaultAnswers() : await ask();
   if (!answers.useAnthropic && !answers.useOpenAI && !answers.useGoogle) {
-    console.error('[31m✘[0m At least one provider must be enabled.');
+    console.error('[31m✘[0m At least one provider must be enabled.');
+    process.exit(1);
+  }
+
+  const enabled: ProviderName[] = [
+    ...(answers.useAnthropic ? (['anthropic'] as const) : []),
+    ...(answers.useOpenAI ? (['openai'] as const) : []),
+    ...(answers.useGoogle ? (['google'] as const) : []),
+  ];
+  if (!enabled.includes(answers.writerProvider)) {
+    console.error(
+      `[31m✘[0m Writer provider "${answers.writerProvider}" is not enabled. Enabled: ${enabled.join(', ')}.`,
+    );
     process.exit(1);
   }
 
@@ -53,14 +84,18 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
   const envAction = await appendOrCreate(envFile, envContent);
 
   console.log('');
-  console.log('[32m✔[0m Created .secure-review.yml');
+  console.log('[32m✔[0m Created .secure-review.yml');
   if (envAction === 'created') {
-    console.log(`[32m✔[0m Created ${envFile}`);
+    console.log(`[32m✔[0m Created ${envFile}`);
   } else if (envAction === 'appended') {
-    console.log(`[32m✔[0m Appended secure-review section to existing ${envFile}`);
+    console.log(`[32m✔[0m Appended secure-review section to existing ${envFile}`);
   } else {
-    console.log(`[36mℹ[0m ${envFile} already had secure-review keys — left untouched`);
+    console.log(`[36mℹ[0m ${envFile} already had secure-review keys — left untouched`);
   }
+  console.log('');
+  console.log(
+    `[36mℹ[0m Writer: ${answers.writerProvider}/${answers.writerModel}  ·  Readers: ${enabled.length} (defaults are cheap; edit .secure-review.yml to change)`,
+  );
   console.log('');
   if (envFile === '.env.example') {
     console.log('Next steps:');
@@ -74,10 +109,8 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
     console.log('  2. npx secure-review review ./src    # Full multi-model review');
   }
   console.log('');
-  console.log('Tips:');
-  console.log('  • Models: defaults are the cheapest per provider. Edit .secure-review.yml');
-  console.log('    to use stronger models (e.g. claude-sonnet-4-6, gpt-4o, gemini-2.5-pro).');
-  console.log('  • Keep .env out of git. The default .gitignore patterns cover it.');
+  console.log('Tip: every model (writer and readers) is just a string in .secure-review.yml.');
+  console.log('     Edit freely — e.g. switch a reader to gpt-4o or gemini-2.5-pro for stronger audits.');
 }
 
 function defaultAnswers(): InitAnswers {
@@ -85,6 +118,8 @@ function defaultAnswers(): InitAnswers {
     useAnthropic: true,
     useOpenAI: true,
     useGoogle: true,
+    writerProvider: 'anthropic',
+    writerModel: WRITER_MODEL_DEFAULTS.anthropic,
     enableSast: true,
     writeKeys: false,
   };
@@ -103,19 +138,57 @@ async function ask(): Promise<InitAnswers> {
     if (!raw && allowEmpty) return undefined;
     return raw;
   };
+  const askChoice = async (q: string, choices: string[], def: string): Promise<string> => {
+    const raw = (await rl.question(`  ${q} (${choices.join('/')}) [${def}] `)).trim().toLowerCase();
+    if (!raw) return def;
+    if (choices.includes(raw)) return raw;
+    console.log(`    Invalid choice "${raw}", using default "${def}"`);
+    return def;
+  };
 
   try {
     console.log('');
-    console.log('[1m[35m━━ secure-review init ━━[0m');
+    console.log('[1m[35m━━ secure-review init ━━[0m');
     console.log('');
     console.log('A few questions to scaffold your config.');
     console.log('Press Enter to accept the default in [brackets].');
     console.log('');
+    console.log('[36mℹ[0m  Heads-up: every model choice below (readers AND writer) is just a string');
+    console.log('   in the generated .secure-review.yml. Edit it later to swap any model — pick');
+    console.log('   sensible starts now, refine after seeing the first run.');
+    console.log('');
 
-    console.log('Reviewers (pick at least one):');
-    const useAnthropic = await askBool('Use Anthropic Claude (claude-haiku-4-5)?', true);
-    const useOpenAI = await askBool('Use OpenAI GPT (gpt-4o-mini)?', true);
-    const useGoogle = await askBool('Use Google Gemini (gemini-2.5-flash)?', true);
+    console.log('Reviewers — they only READ code and report findings (pick at least one):');
+    const useAnthropic = await askBool('Use Anthropic Claude (reader: claude-haiku-4-5)?', true);
+    const useOpenAI = await askBool('Use OpenAI GPT (reader: gpt-4o-mini)?', true);
+    const useGoogle = await askBool('Use Google Gemini (reader: gemini-2.5-flash)?', true);
+    console.log('');
+
+    if (!useAnthropic && !useOpenAI && !useGoogle) {
+      throw new Error('At least one provider must be enabled.');
+    }
+
+    const enabledProviders: string[] = [
+      ...(useAnthropic ? ['anthropic'] : []),
+      ...(useOpenAI ? ['openai'] : []),
+      ...(useGoogle ? ['google'] : []),
+    ];
+
+    console.log('Writer — the ONE model that EDITS files in fix mode.');
+    console.log('  Readers report; the writer applies fixes. Pick at least as strong as');
+    console.log('  whatever generated the original code (e.g. Sonnet, GPT-4o, or Gemini Pro).');
+    const defaultWriterProvider = useAnthropic ? 'anthropic' : useOpenAI ? 'openai' : 'google';
+    const writerProvider = (await askChoice(
+      'Writer provider?',
+      enabledProviders,
+      defaultWriterProvider,
+    )) as ProviderName;
+    const defaultWriterModel = WRITER_MODEL_DEFAULTS[writerProvider];
+    const writerModelInput = await askText(
+      `Writer model? [${defaultWriterModel}] (free-form — type any model name your provider supports)`,
+      true,
+    );
+    const writerModel = writerModelInput || defaultWriterModel;
     console.log('');
 
     console.log('Static analysis:');
@@ -146,6 +219,8 @@ async function ask(): Promise<InitAnswers> {
       useAnthropic,
       useOpenAI,
       useGoogle,
+      writerProvider,
+      writerModel,
       enableSast,
       writeKeys,
       ...(anthropicKey !== undefined ? { anthropicKey } : {}),
@@ -160,21 +235,13 @@ async function ask(): Promise<InitAnswers> {
 const SKILLS_BASE = 'node_modules/secure-review/skills';
 
 export function generateConfig(a: InitAnswers): string {
-  // Pick a sensible writer: OpenAI gpt-4o-mini is the cheapest and fastest.
-  // Fall back to whichever provider is enabled.
-  const writer = a.useOpenAI
-    ? { provider: 'openai', model: 'gpt-4o-mini' }
-    : a.useAnthropic
-      ? { provider: 'anthropic', model: 'claude-haiku-4-5' }
-      : { provider: 'google', model: 'gemini-2.5-flash' };
-
   const reviewers: string[] = [];
   if (a.useAnthropic) {
     reviewers.push(
       [
         '  - name: anthropic-haiku',
         '    provider: anthropic',
-        '    model: claude-haiku-4-5',
+        `    model: ${READER_MODEL_DEFAULTS.anthropic}`,
         `    skill: ${SKILLS_BASE}/owasp-reviewer.md`,
       ].join('\n'),
     );
@@ -184,7 +251,7 @@ export function generateConfig(a: InitAnswers): string {
       [
         '  - name: openai-mini',
         '    provider: openai',
-        '    model: gpt-4o-mini',
+        `    model: ${READER_MODEL_DEFAULTS.openai}`,
         `    skill: ${SKILLS_BASE}/web-sec-reviewer.md`,
       ].join('\n'),
     );
@@ -194,21 +261,26 @@ export function generateConfig(a: InitAnswers): string {
       [
         '  - name: gemini-flash',
         '    provider: google',
-        '    model: gemini-2.5-flash',
+        `    model: ${READER_MODEL_DEFAULTS.google}`,
         `    skill: ${SKILLS_BASE}/dependency-reviewer.md`,
       ].join('\n'),
     );
   }
 
   return `# secure-review configuration
-# Generated by 'secure-review init'. Edit freely.
+# Generated by 'secure-review init'. Edit freely — every model name below
+# is just a string. Swap providers, upgrade models, change skills, etc.
 
 writer:
-  provider: ${writer.provider}
-  model: ${writer.model}
+  # The ONLY role that modifies files. Pick at least as strong as whatever
+  # generated the original code being reviewed.
+  provider: ${a.writerProvider}
+  model: ${a.writerModel}
   skill: ${SKILLS_BASE}/secure-node-writer.md
 
 reviewers:
+  # Readers only REPORT. Defaults are the cheapest tier per provider —
+  # upgrade to gpt-4o / claude-sonnet-4-6 / gemini-2.5-pro for stronger audits.
 ${reviewers.join('\n')}
 
 sast:

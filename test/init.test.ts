@@ -1,15 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { generateConfig, generateEnv, type InitAnswers } from '../src/commands/init.js';
+import { generateConfig, generateEnv, WRITER_MODEL_DEFAULTS, type InitAnswers } from '../src/commands/init.js';
 
 const all: InitAnswers = {
   useAnthropic: true, useOpenAI: true, useGoogle: true,
+  writerProvider: 'anthropic', writerModel: WRITER_MODEL_DEFAULTS.anthropic,
   enableSast: true, writeKeys: false,
 };
 
 describe('init generators', () => {
-  it('generates config with all 3 reviewers', () => {
+  it('generates config with all 3 reviewers and Sonnet writer by default', () => {
     const yml = generateConfig(all);
     expect(yml).toContain('writer:');
+    expect(yml).toContain('provider: anthropic');
+    expect(yml).toContain('model: claude-sonnet-4-6');
     expect(yml).toContain('anthropic-haiku');
     expect(yml).toContain('openai-mini');
     expect(yml).toContain('gemini-flash');
@@ -18,15 +21,33 @@ describe('init generators', () => {
   });
 
   it('omits unselected reviewers', () => {
-    const yml = generateConfig({ ...all, useGoogle: false, useOpenAI: false });
+    const yml = generateConfig({
+      ...all, useGoogle: false, useOpenAI: false,
+      // writer must point at an enabled provider
+      writerProvider: 'anthropic', writerModel: WRITER_MODEL_DEFAULTS.anthropic,
+    });
     expect(yml).toContain('anthropic-haiku');
     expect(yml).not.toContain('openai-mini');
     expect(yml).not.toContain('gemini-flash');
   });
 
-  it('picks writer fallback when openai disabled', () => {
-    const yml = generateConfig({ ...all, useOpenAI: false });
-    expect(yml).toMatch(/writer:\n  provider: anthropic/);
+  it('honours an explicitly-chosen OpenAI writer with custom model', () => {
+    const yml = generateConfig({
+      ...all,
+      writerProvider: 'openai',
+      writerModel: 'gpt-4o',
+    });
+    expect(yml).toMatch(/writer:\n[^]*?provider: openai\n[^]*?model: gpt-4o\n/);
+  });
+
+  it('honours a free-form custom writer model name', () => {
+    const yml = generateConfig({
+      ...all,
+      writerProvider: 'google',
+      writerModel: 'gemini-2.5-pro-experimental',
+    });
+    expect(yml).toContain('provider: google');
+    expect(yml).toContain('model: gemini-2.5-pro-experimental');
   });
 
   it('SAST disabled when enableSast=false', () => {
@@ -47,5 +68,11 @@ describe('init generators', () => {
     expect(env).toContain('ANTHROPIC_API_KEY=sk-ant-real');
     expect(env).toContain('OPENAI_API_KEY=sk-real');
     expect(env).toContain('GOOGLE_API_KEY=AIzaReal');
+  });
+
+  it('exposes sensible writer-model defaults per provider', () => {
+    expect(WRITER_MODEL_DEFAULTS.anthropic).toBe('claude-sonnet-4-6');
+    expect(WRITER_MODEL_DEFAULTS.openai).toBe('gpt-4o');
+    expect(WRITER_MODEL_DEFAULTS.google).toBe('gemini-2.5-pro');
   });
 });

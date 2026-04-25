@@ -8,7 +8,7 @@ export const modules = {
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   runInit: () => (/* binding */ runInit)
 /* harmony export */ });
-/* unused harmony exports generateConfig, SECURE_REVIEW_ENV_MARKER, generateEnv */
+/* unused harmony exports WRITER_MODEL_DEFAULTS, READER_MODEL_DEFAULTS, generateConfig, SECURE_REVIEW_ENV_MARKER, generateEnv */
 /* harmony import */ var node_fs_promises__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1455);
 /* harmony import */ var node_fs_promises__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(node_fs_promises__WEBPACK_IMPORTED_MODULE_0__);
 /* harmony import */ var node_readline_promises__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(6848);
@@ -27,18 +27,40 @@ export const modules = {
 
 
 
+// Sensible *strong* defaults for the writer. The writer MODIFIES files,
+// so it's worth spending more on it than on readers (which only report).
+// Reader models stay on the cheapest tier — see READER_MODEL_DEFAULTS.
+const WRITER_MODEL_DEFAULTS = {
+    anthropic: 'claude-sonnet-4-6',
+    openai: 'gpt-4o',
+    google: 'gemini-2.5-pro',
+};
+const READER_MODEL_DEFAULTS = {
+    anthropic: 'claude-haiku-4-5',
+    openai: 'gpt-4o-mini',
+    google: 'gemini-2.5-flash',
+};
 async function runInit(opts = {}) {
     if (!opts.force) {
         for (const f of ['.secure-review.yml']) {
             if (await fileExists(f)) {
-                console.error(`[31m✘[0m Refusing to overwrite ${f}. Pass --force to overwrite, or delete the file first.`);
+                console.error(`[31m✘[0m Refusing to overwrite ${f}. Pass --force to overwrite, or delete the file first.`);
                 process.exit(1);
             }
         }
     }
     const answers = opts.yes ? defaultAnswers() : await ask();
     if (!answers.useAnthropic && !answers.useOpenAI && !answers.useGoogle) {
-        console.error('[31m✘[0m At least one provider must be enabled.');
+        console.error('[31m✘[0m At least one provider must be enabled.');
+        process.exit(1);
+    }
+    const enabled = [
+        ...(answers.useAnthropic ? ['anthropic'] : []),
+        ...(answers.useOpenAI ? ['openai'] : []),
+        ...(answers.useGoogle ? ['google'] : []),
+    ];
+    if (!enabled.includes(answers.writerProvider)) {
+        console.error(`[31m✘[0m Writer provider "${answers.writerProvider}" is not enabled. Enabled: ${enabled.join(', ')}.`);
         process.exit(1);
     }
     const yaml = generateConfig(answers);
@@ -47,16 +69,18 @@ async function runInit(opts = {}) {
     await (0,node_fs_promises__WEBPACK_IMPORTED_MODULE_0__.writeFile)('.secure-review.yml', yaml, 'utf8');
     const envAction = await appendOrCreate(envFile, envContent);
     console.log('');
-    console.log('[32m✔[0m Created .secure-review.yml');
+    console.log('[32m✔[0m Created .secure-review.yml');
     if (envAction === 'created') {
-        console.log(`[32m✔[0m Created ${envFile}`);
+        console.log(`[32m✔[0m Created ${envFile}`);
     }
     else if (envAction === 'appended') {
-        console.log(`[32m✔[0m Appended secure-review section to existing ${envFile}`);
+        console.log(`[32m✔[0m Appended secure-review section to existing ${envFile}`);
     }
     else {
-        console.log(`[36mℹ[0m ${envFile} already had secure-review keys — left untouched`);
+        console.log(`[36mℹ[0m ${envFile} already had secure-review keys — left untouched`);
     }
+    console.log('');
+    console.log(`[36mℹ[0m Writer: ${answers.writerProvider}/${answers.writerModel}  ·  Readers: ${enabled.length} (defaults are cheap; edit .secure-review.yml to change)`);
     console.log('');
     if (envFile === '.env.example') {
         console.log('Next steps:');
@@ -71,13 +95,16 @@ async function runInit(opts = {}) {
         console.log('  2. npx secure-review review ./src    # Full multi-model review');
     }
     console.log('');
-    console.log('Tip: keep .env out of git. The default .gitignore patterns cover it.');
+    console.log('Tip: every model (writer and readers) is just a string in .secure-review.yml.');
+    console.log('     Edit freely — e.g. switch a reader to gpt-4o or gemini-2.5-pro for stronger audits.');
 }
 function defaultAnswers() {
     return {
         useAnthropic: true,
         useOpenAI: true,
         useGoogle: true,
+        writerProvider: 'anthropic',
+        writerModel: WRITER_MODEL_DEFAULTS.anthropic,
         enableSast: true,
         writeKeys: false,
     };
@@ -97,17 +124,47 @@ async function ask() {
             return undefined;
         return raw;
     };
+    const askChoice = async (q, choices, def) => {
+        const raw = (await rl.question(`  ${q} (${choices.join('/')}) [${def}] `)).trim().toLowerCase();
+        if (!raw)
+            return def;
+        if (choices.includes(raw))
+            return raw;
+        console.log(`    Invalid choice "${raw}", using default "${def}"`);
+        return def;
+    };
     try {
         console.log('');
-        console.log('[1m[35m━━ secure-review init ━━[0m');
+        console.log('[1m[35m━━ secure-review init ━━[0m');
         console.log('');
         console.log('A few questions to scaffold your config.');
         console.log('Press Enter to accept the default in [brackets].');
         console.log('');
-        console.log('Reviewers (pick at least one):');
-        const useAnthropic = await askBool('Use Anthropic Claude (claude-haiku-4-5)?', true);
-        const useOpenAI = await askBool('Use OpenAI GPT (gpt-4o-mini)?', true);
-        const useGoogle = await askBool('Use Google Gemini (gemini-2.5-flash)?', true);
+        console.log('[36mℹ[0m  Heads-up: every model choice below (readers AND writer) is just a string');
+        console.log('   in the generated .secure-review.yml. Edit it later to swap any model — pick');
+        console.log('   sensible starts now, refine after seeing the first run.');
+        console.log('');
+        console.log('Reviewers — they only READ code and report findings (pick at least one):');
+        const useAnthropic = await askBool('Use Anthropic Claude (reader: claude-haiku-4-5)?', true);
+        const useOpenAI = await askBool('Use OpenAI GPT (reader: gpt-4o-mini)?', true);
+        const useGoogle = await askBool('Use Google Gemini (reader: gemini-2.5-flash)?', true);
+        console.log('');
+        if (!useAnthropic && !useOpenAI && !useGoogle) {
+            throw new Error('At least one provider must be enabled.');
+        }
+        const enabledProviders = [
+            ...(useAnthropic ? ['anthropic'] : []),
+            ...(useOpenAI ? ['openai'] : []),
+            ...(useGoogle ? ['google'] : []),
+        ];
+        console.log('Writer — the ONE model that EDITS files in fix mode.');
+        console.log('  Readers report; the writer applies fixes. Pick at least as strong as');
+        console.log('  whatever generated the original code (e.g. Sonnet, GPT-4o, or Gemini Pro).');
+        const defaultWriterProvider = useAnthropic ? 'anthropic' : useOpenAI ? 'openai' : 'google';
+        const writerProvider = (await askChoice('Writer provider?', enabledProviders, defaultWriterProvider));
+        const defaultWriterModel = WRITER_MODEL_DEFAULTS[writerProvider];
+        const writerModelInput = await askText(`Writer model? [${defaultWriterModel}] (free-form — type any model name your provider supports)`, true);
+        const writerModel = writerModelInput || defaultWriterModel;
         console.log('');
         console.log('Static analysis:');
         const enableSast = await askBool('Enable SAST (semgrep + eslint + npm-audit)? Catches issues AI may miss.', true);
@@ -131,6 +188,8 @@ async function ask() {
             useAnthropic,
             useOpenAI,
             useGoogle,
+            writerProvider,
+            writerModel,
             enableSast,
             writeKeys,
             ...(anthropicKey !== undefined ? { anthropicKey } : {}),
@@ -144,19 +203,12 @@ async function ask() {
 }
 const SKILLS_BASE = 'node_modules/secure-review/skills';
 function generateConfig(a) {
-    // Pick a sensible writer: OpenAI gpt-4o-mini is the cheapest and fastest.
-    // Fall back to whichever provider is enabled.
-    const writer = a.useOpenAI
-        ? { provider: 'openai', model: 'gpt-4o-mini' }
-        : a.useAnthropic
-            ? { provider: 'anthropic', model: 'claude-haiku-4-5' }
-            : { provider: 'google', model: 'gemini-2.5-flash' };
     const reviewers = [];
     if (a.useAnthropic) {
         reviewers.push([
             '  - name: anthropic-haiku',
             '    provider: anthropic',
-            '    model: claude-haiku-4-5',
+            `    model: ${READER_MODEL_DEFAULTS.anthropic}`,
             `    skill: ${SKILLS_BASE}/owasp-reviewer.md`,
         ].join('\n'));
     }
@@ -164,7 +216,7 @@ function generateConfig(a) {
         reviewers.push([
             '  - name: openai-mini',
             '    provider: openai',
-            '    model: gpt-4o-mini',
+            `    model: ${READER_MODEL_DEFAULTS.openai}`,
             `    skill: ${SKILLS_BASE}/web-sec-reviewer.md`,
         ].join('\n'));
     }
@@ -172,19 +224,24 @@ function generateConfig(a) {
         reviewers.push([
             '  - name: gemini-flash',
             '    provider: google',
-            '    model: gemini-2.5-flash',
+            `    model: ${READER_MODEL_DEFAULTS.google}`,
             `    skill: ${SKILLS_BASE}/dependency-reviewer.md`,
         ].join('\n'));
     }
     return `# secure-review configuration
-# Generated by 'secure-review init'. Edit freely.
+# Generated by 'secure-review init'. Edit freely — every model name below
+# is just a string. Swap providers, upgrade models, change skills, etc.
 
 writer:
-  provider: ${writer.provider}
-  model: ${writer.model}
+  # The ONLY role that modifies files. Pick at least as strong as whatever
+  # generated the original code being reviewed.
+  provider: ${a.writerProvider}
+  model: ${a.writerModel}
   skill: ${SKILLS_BASE}/secure-node-writer.md
 
 reviewers:
+  # Readers only REPORT. Defaults are the cheapest tier per provider —
+  # upgrade to gpt-4o / claude-sonnet-4-6 / gemini-2.5-pro for stronger audits.
 ${reviewers.join('\n')}
 
 sast:
