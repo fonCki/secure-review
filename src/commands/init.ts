@@ -74,7 +74,10 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
     console.log('  2. npx secure-review review ./src    # Full multi-model review');
   }
   console.log('');
-  console.log('Tip: keep .env out of git. The default .gitignore patterns cover it.');
+  console.log('Tips:');
+  console.log('  • Models: defaults are the cheapest per provider. Edit .secure-review.yml');
+  console.log('    to use stronger models (e.g. claude-sonnet-4-6, gpt-4o, gemini-2.5-pro).');
+  console.log('  • Keep .env out of git. The default .gitignore patterns cover it.');
 }
 
 function defaultAnswers(): InitAnswers {
