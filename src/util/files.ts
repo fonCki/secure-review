@@ -36,6 +36,23 @@ const CODE_EXTENSIONS = new Set([
   '.yaml',
 ]);
 
+// Lockfiles are auto-generated, often 100KB+, and contain no human-written
+// code worth security-reviewing. Without skipping them, a typical Node
+// project's package-lock.json (~100-300KB) eats the entire reviewer prompt
+// budget (cf. serializeCodeContext maxChars=120_000) and crowds out the
+// actual source files. Discovered in production: secure-review-tutorial-app
+// PR #1 returned 0 LLM findings on visibly vulnerable code because
+// package-lock.json (114K) consumed the prompt; src/server.js never made
+// it to any reader.
+const LOCKFILE_NAMES = new Set([
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+  'bun.lockb',
+  'bun.lock',
+  'npm-shrinkwrap.json',
+]);
+
 /** Recursively read source files under a path, skipping common junk. */
 export async function readSourceTree(root: string, maxBytesPerFile = 200_000): Promise<FileContent[]> {
   const abs = resolve(root);
@@ -60,6 +77,7 @@ async function walk(dir: string, root: string, out: FileContent[], maxBytes: num
       continue;
     }
     if (!entry.isFile()) continue;
+    if (LOCKFILE_NAMES.has(entry.name)) continue;
     const dot = entry.name.lastIndexOf('.');
     const ext = dot >= 0 ? entry.name.slice(dot) : '';
     if (!CODE_EXTENSIONS.has(ext) && entry.name !== 'package.json' && entry.name !== 'Dockerfile') continue;

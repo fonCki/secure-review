@@ -2,6 +2,32 @@
 
 All notable changes to `secure-review`. Newest first.
 
+## [0.5.9] — 2026-04-26
+
+### Skip lockfiles in source-tree scan (production-discovered bug)
+
+`readSourceTree` was loading `package-lock.json` (114KB in the test case) into the reviewer prompt context. The serialization cap is 120,000 chars, so a single lockfile fills the entire budget — the actual source files (`src/server.js`, `src/auth.ts`, etc.) get truncated out and never reach any LLM reviewer.
+
+Symptom in production: `secure-review-tutorial-app` PR #1 ran the GitHub Action with all 3 readers (anthropic-haiku, openai-mini, gemini-flash) on visibly vulnerable code (hardcoded secret, command injection, SQL injection) and **all 3 returned 0 findings in 1.2-3.3s with $0.000-0.005 cost**. Diagnostic timeline:
+
+- LLMs were called (cost > 0)
+- LLMs returned promptly (1.2-3.3s)
+- LLMs returned `{"findings": []}` (the empty case)
+- Total cost rounded to ~zero output tokens
+
+This eliminated v1 tag staleness, parser bugs, skill loading, prompt structure — all healthy. The remaining hypothesis was prompt content. Confirmed by dumping file sizes: `package-lock.json` was 114,607 bytes, > 95% of the 120,000-char prompt budget.
+
+Fix: explicit `LOCKFILE_NAMES` deny-list in `src/util/files.ts`, applied before the extension allowlist:
+
+```
+package-lock.json    pnpm-lock.yaml    yarn.lock
+bun.lockb           bun.lock          npm-shrinkwrap.json
+```
+
+Lockfiles are auto-generated and contain no human-written code worth security-reviewing. SAST tools (npm-audit) already cover the dependency-vulnerability angle.
+
+---
+
 ## [0.5.8] — 2026-04-26
 
 ### `secure-review setup-secrets` — automated GitHub secrets via `gh` CLI
