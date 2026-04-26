@@ -2,6 +2,31 @@
 
 All notable changes to `secure-review`. Newest first.
 
+## [0.5.10] — 2026-04-26
+
+### Architecture diagram in the README
+
+Replaced the ASCII-art Architecture block with a proper image (`assets/architecture.png`) — generated via Gemini. Same eight layers, same labels, but readable at a glance with iconography, color-coding by layer group (CLI/Modes blue, Roles purple, Adapters/SAST teal, Aggregator/Gates orange, Reporters green), and arrows showing the flow. Crisp at any GitHub viewport width.
+
+### Dev tooling: pnpm → npm
+
+The tool was always installed and consumed via npm (`npm install --save-dev secure-review`), but the dev workflow was pinned to pnpm via `packageManager` field. Confusing, no real benefit at this scale, and a friction barrier for new contributors.
+
+Migration:
+- Removed `"packageManager": "pnpm@10.33.0"` from `package.json`
+- Deleted `pnpm-lock.yaml`, generated `package-lock.json` via `npm install`
+- CI workflow (`.github/workflows/ci.yml`): dropped `pnpm/action-setup@v4`, switched to `npm ci` + `npm run X` for all steps
+- README "Developing" section: `pnpm` commands replaced with `npm` equivalents
+
+Net result: one package manager across user-facing flow (`npm install`), action runtime (`npm ci`), and contributor workflow (`npm install`). No behavior change for users; lower friction for contributors.
+
+### Other
+
+- 76 tests still pass under `npm test` (was already passing under `pnpm test`)
+- Action bundle (`dist-action/index.js`) byte-identical for the published artifact
+
+---
+
 ## [0.5.9] — 2026-04-26
 
 ### Skip lockfiles in source-tree scan (production-discovered bug)

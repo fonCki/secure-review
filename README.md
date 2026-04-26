@@ -219,37 +219,9 @@ Fork PRs are skipped by default (forks don't have secret access). Fails the chec
 
 ## Architecture
 
-```
-┌────────────────────────────────────────────┐
-│  CLI  (cli.ts — commander)                 │
-├────────────────────────────────────────────┤
-│  Modes                                      │
-│    review.ts  → parallel reviewers + SAST  │
-│    fix.ts     → rotating loop + writer     │
-├────────────────────────────────────────────┤
-│  Roles                                      │
-│    reviewer.ts  → prompt → adapter → JSON  │
-│    writer.ts    → fix prompt → file edits  │
-├────────────────────────────────────────────┤
-│  Adapters (ModelAdapter interface)          │
-│    anthropic-api · anthropic-cli           │
-│    openai-api                              │
-│    google-api · google-cli                 │
-├────────────────────────────────────────────┤
-│  SAST wrappers                              │
-│    semgrep · eslint · npm-audit            │
-│                                             │
-│  Aggregator                                 │
-│    dedup by {file, line//10, cwe}          │
-│    union reportedBy → confidence            │
-│                                             │
-│  Gates                                      │
-│    new-critical · cost · wall-time         │
-│                                             │
-│  Reporters                                  │
-│    markdown · json (evidence) · github-pr  │
-└────────────────────────────────────────────┘
-```
+![secure-review architecture: layered stack of CLI, Modes, Roles, Adapters, SAST wrappers, Aggregator, Gates, Reporters](assets/architecture.png)
+
+For the per-mode runtime flow (sequence diagrams, state diagrams, full pseudo-code), see [WORKFLOW.md](WORKFLOW.md).
 
 ## Evidence JSON
 
@@ -277,11 +249,11 @@ The same JSON is produced by both `review` and `fix` modes — a single schema f
 ## Developing
 
 ```bash
-pnpm install
-pnpm typecheck
-pnpm test
-pnpm build            # library (dist/)
-pnpm build:action     # Action bundle (dist-action/index.js) — commit with PRs that touch src/
+npm install
+npm run typecheck
+npm test
+npm run build         # library (dist/)
+npm run build:action  # Action bundle (dist-action/index.js) — commit with PRs that touch src/
 ```
 
 ## License
