@@ -2,6 +2,30 @@
 
 All notable changes to `secure-review`. Newest first.
 
+## [0.5.4] — 2026-04-26
+
+### Documentation accuracy fixes (caught by independent validator agents)
+
+Two parallel validator agents (Gemini second-opinion + general-purpose) cross-checked the 0.5.3 docs against the actual TypeScript source. They found 9 real issues, all fixed here:
+
+**README.md leaks** (seminar artifacts that survived the 0.5.3 cleanup):
+- Architecture diagram: `markdown · json (cond-D) · github-pr` → `markdown · json (evidence) · github-pr`
+- Evidence JSON example: `"task_id": "01-auth"` → `"task_id": "my-app"`
+- Evidence JSON example: `"condition": "F-fix"` → `"mode": "fix"` (matches what the tool actually emits)
+
+**WORKFLOW.md inaccuracies vs source**:
+- SAST tools were described as "parallel" — they actually run **sequentially** (`semgrep` → `eslint` → `npm-audit` in `runAllSast`). Wording corrected for `scan`, `review`, and `fix` initial-scan sections.
+- `review` mode reader parallelism was presented as unconditional — it's actually gated by `config.review.parallel` (defaults true). Note added.
+- `fix` mode rotation was presented as unconditional — `config.fix.mode === 'parallel_aggregate'` skips rotation entirely (verifier always = readers[0]). Now documented.
+- Aggregation algorithm claimed "sorted by severity desc, then reportedBy desc" — `aggregate()` returns insertion order with no sort. Corrected to "insertion-ordered; callers sort if they want order".
+- Aggregation grouping key: clarified that `cwe` falls back to a 24-char title prefix when missing, and that finding IDs are synthesized "F-NN" in iteration order.
+- Resilience layer retry timing claimed "1.5s → 3s → exit" — that's only the Anthropic adapter's override. Default `withRetry` is 1s → 2s → exit. Now distinguishes default from per-adapter overrides.
+- `pr` mode bucketing logic was attributed to the CLI — it actually lives in `postPrReview()` (`src/reporters/github-pr.ts`). Attribution corrected.
+
+No code changes — pure documentation accuracy. Underlying behavior unchanged from 0.5.3.
+
+---
+
 ## [0.5.3] — 2026-04-26
 
 ### Documentation overhaul

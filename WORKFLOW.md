@@ -23,13 +23,15 @@ The simplest mode. No LLM calls, no API keys required.
 
 ```
 1. Read source tree
-2. Run all SAST tools in parallel:
+2. Run each enabled SAST tool sequentially (in src/sast/index.ts order):
      - semgrep (auto config)
-     - eslint (project config required)
-     - npm audit (if package.json)
+     - eslint  (uses your project's config; tool exits early if no eslint.config.js)
+     - npm audit (only if package.json exists)
 3. Normalize each tool's output to the unified Finding schema
-4. Print summary; no report file written
+4. Print summary as JSON to stdout; no report file written
 ```
+
+> SAST tools are run sequentially rather than in parallel because they're typically I/O- and CPU-light, the orchestration overhead of `Promise.all` rarely pays off, and sequential execution makes failure attribution easier.
 
 Use it when you want a fast, free, AI-free triage.
 
@@ -41,11 +43,12 @@ Every reader scans the same code at the same time. Findings are merged by `{file
 
 ```
 1. Read source tree
-2. Run all SAST tools (parallel)
-3. Run all readers (parallel — each reader gets:
+2. Run all SAST tools (sequential — semgrep, then eslint, then npm-audit)
+3. Run readers — parallel if config.review.parallel == true (default), otherwise
+   sequential. Each reader receives:
                     - the code
-                    - the SAST findings as prior context (configurable)
-                    - its own role-specific skill prompt)
+                    - the SAST findings as prior context (if config.sast.inject_into_reviewer_context)
+                    - its own role-specific skill prompt
 4. Aggregate:
      allFindings = union(reader_A.findings,
                          reader_B.findings,
@@ -69,18 +72,21 @@ The mode that does the actual work of fixing security issues. It uses **rotation
 
 > **0.5.0+ semantics** — if you read older docs (or a fork on an older version), the fix-mode loop worked differently before. See [CHANGELOG.md](CHANGELOG.md) for the migration notes. The pseudo-code below describes 0.5.0+ only.
 
-### Phase 1: Initial union scan (parallel)
+### Phase 1: Initial union scan
 
 ```
+SAST(files)                          # sequential SAST tools
 initialFindings = aggregate(
-    reader_A.review(files) +     # all readers run simultaneously
+    reader_A.review(files) +         # readers run in PARALLEL (Promise.all)
     reader_B.review(files) +
     reader_C.review(files) +
-    SAST(files)
+    SAST.findings
 )
 currentFindings = initialFindings    # ← becomes the writer's iter-1 to-do list
                                      # (so no reader's blind spots get a free pass)
 ```
+
+> SAST runs sequentially before the parallel reader fan-out. Readers always run in parallel in `fix` mode (no opt-out), so the `config.review.parallel` flag has no effect here.
 
 ### Phase 2: Iteration loop
 
@@ -89,7 +95,10 @@ let consecutiveCleanIters = 0
 let N = number of readers
 
 for i in 0 .. (max_iterations - 1):
-    verifier = readers[i % N]            # rotation: i=0→A, i=1→B, i=2→C, i=3→A, ...
+    # Rotation policy (config.fix.mode):
+    #   "sequential_rotation" (default): verifier = readers[i % N]
+    #   "parallel_aggregate":             verifier = readers[0]   # always first; no rotation
+    verifier = pickReviewer(readers, i, config.fix.mode)
 
     # Step A: Writer applies fixes (writer is fixed; same model every iteration)
     if currentFindings.length > 0:
@@ -159,14 +168,15 @@ Runs `review` mode on the PR diff and posts a single review with line-anchored c
 2. Skip if PR is from a fork (no secret access)
 3. Fetch PR file list, parse diffs into commentable line numbers per file
 4. Run review mode (full multi-reader scan + SAST)
-5. Split findings into 3 buckets:
+5. Hand all findings + the per-file commentable-line map to `postPrReview()`
+   (defined in src/reporters/github-pr.ts). Inside, findings are split into 3 buckets:
      - inline:        in a changed file AND on a commentable line → posted as inline review comment
      - summary:       in a changed file BUT on an unchanged line  → mentioned in review summary
      - dropped:       in an untouched file                        → not posted
-6. Post one PR review with all inline comments + summary text
-7. Set GitHub Check status:
-     - if config.gates.block_on_new_critical AND any CRITICAL inline finding → check fails
-     - else → check passes
+6. `postPrReview` posts one PR review with all inline comments + summary text
+7. The CLI sets GitHub Check status:
+     - if config.gates.block_on_new_critical AND any CRITICAL inline finding → exit code 2 → check fails
+     - else → exit code 0 → check passes
 ```
 
 Fork PR safety: forks don't have access to repo secrets, so reviewers would fail to authenticate. Skipping prevents wasted CI minutes and confusing failure modes.
@@ -197,15 +207,17 @@ Used by both `review` mode (one-shot) and `fix` mode (each verification step).
 ```
 function aggregate(rawFindings):
     grouped = group rawFindings by key:
-                  key = {file, floor(line / 10), cwe}
+                  key = {file, floor(line / 10), cwe ?? title-prefix}
+    # cwe defaults to a 24-char lowercased title prefix when absent — so
+    # findings missing a CWE can still merge if their titles agree.
     for each group:
-        merged.id          = first finding's id
+        merged.id          = synthesized "F-NN" (assigned in iteration order)
         merged.title       = longest title (most descriptive)
         merged.description = longest description
         merged.severity    = highest severity in group
         merged.reportedBy  = union of all names in group
         merged.confidence  = min(1, |reportedBy| / 3)
-    return merged_findings sorted by severity desc, then by reportedBy count desc
+    return merged_findings  # insertion-ordered; callers sort if they want order
 ```
 
 The `floor(line / 10)` line-bucket is intentionally fuzzy — different reviewers often point at slightly different lines for the same bug ("line 24 in Anthropic's view" vs "line 26 in OpenAI's view"). Bucketing by 10-line windows merges these into one finding.
@@ -216,7 +228,7 @@ The `floor(line / 10)` line-bucket is intentionally fuzzy — different reviewer
 
 Three safety nets keep the tool running under transient failures:
 
-1. **`withRetry()`** — exponential backoff (1.5s → 3s → exit) for any provider call that throws a transient error (429, 5xx, ECONNRESET, "high demand", "fetch failed", etc.). Defined in `src/util/retry.ts`.
+1. **`withRetry()`** — exponential backoff for any provider call that throws a transient error (429, 5xx, `ECONNRESET`, "high demand", "fetch failed", `cause`-wrapped network errors, etc.). Defined in `src/util/retry.ts`. Default schedule: 3 attempts at 1s → 2s → fail. Adapters can override (the Anthropic adapter uses 1.5s → 3s, for example).
 2. **Writer parse-failure retry** — if the writer's JSON output isn't parseable, retry once with a stricter "JSON ONLY, no prose" reminder. Catches Sonnet's occasional drift into prose-around-JSON.
 3. **Anthropic prefill `{`** — when `jsonMode=true`, the Anthropic adapter prefills the assistant turn with `{` so the model has to continue inside an open JSON object. Drops most prose drift at the source.
 

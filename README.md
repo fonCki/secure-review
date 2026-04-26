@@ -222,7 +222,7 @@ Fork PRs are skipped by default (forks don't have secret access). Fails the chec
 │    new-critical · cost · wall-time         │
 │                                             │
 │  Reporters                                  │
-│    markdown · json (cond-D) · github-pr    │
+│    markdown · json (evidence) · github-pr  │
 └────────────────────────────────────────────┘
 ```
 
@@ -232,9 +232,9 @@ Every run emits a self-contained JSON with per-iteration counts and severity bre
 
 ```json
 {
-  "task_id": "01-auth",
+  "task_id": "my-app",
   "tool": "secure-review",
-  "condition": "F-fix",
+  "mode": "fix",
   "run": 1,
   "total_findings_initial": 12,
   "findings_by_severity_initial": { "CRITICAL": 1, "HIGH": 3, "MEDIUM": 5, "LOW": 2, "INFO": 1 },
