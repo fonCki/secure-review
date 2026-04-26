@@ -105,6 +105,9 @@ function defaultAnswers() {
         useGoogle: true,
         writerProvider: 'anthropic',
         writerModel: WRITER_MODEL_DEFAULTS.anthropic,
+        // Default = 3 since --yes enables all 3 providers; full-rotation-clean
+        // exit needs max_iterations >= N to be reachable.
+        maxIterations: 3,
         enableSast: true,
         writeKeys: false,
     };
@@ -166,6 +169,22 @@ async function ask() {
         const writerModelInput = await askText(`Writer model? [${defaultWriterModel}] (free-form — type any model name your provider supports)`, true);
         const writerModel = writerModelInput || defaultWriterModel;
         console.log('');
+        console.log('Fix mode behavior:');
+        console.log('  Each iteration: writer fixes the current findings, then the next reader');
+        console.log('  in rotation audits with fresh eyes. The "full-rotation-clean" early-exit');
+        console.log('  only fires after N consecutive verifiers all see clean — so a meaningful');
+        console.log(`  default is N (= ${enabledProviders.length} for your setup).`);
+        const N = enabledProviders.length;
+        const maxIterInput = await askText(`  Max iterations of the fix loop? [${N}]`, true);
+        const parsedMaxIter = maxIterInput ? Number.parseInt(maxIterInput, 10) : NaN;
+        const maxIterations = Number.isFinite(parsedMaxIter) && parsedMaxIter >= 0 ? parsedMaxIter : N;
+        if (maxIterInput && !Number.isFinite(parsedMaxIter)) {
+            console.log(`    "${maxIterInput}" isn't a non-negative integer — using default ${N}`);
+        }
+        else if (maxIterations < N) {
+            console.log(`    Note: max_iterations=${maxIterations} < N=${N}; the "full-rotation-clean" early-exit cannot fire (needs ${N} consecutive cleans).`);
+        }
+        console.log('');
         console.log('Static analysis:');
         const enableSast = await askBool('Enable SAST (semgrep + eslint + npm-audit)? Catches issues AI may miss.', true);
         console.log('');
@@ -190,6 +209,7 @@ async function ask() {
             useGoogle,
             writerProvider,
             writerModel,
+            maxIterations,
             enableSast,
             writeKeys,
             ...(anthropicKey !== undefined ? { anthropicKey } : {}),
@@ -254,7 +274,11 @@ review:
 
 fix:
   mode: sequential_rotation
-  max_iterations: 3
+  # max_iterations is the loop ceiling. The "full-rotation-clean" early
+  # exit needs N consecutive verifiers to all see clean (where N = number
+  # of readers above), so max_iterations >= N is recommended. Set to 0
+  # to skip the fix loop entirely (just initial scan + final verification).
+  max_iterations: ${a.maxIterations}
   final_verification: all_reviewers
 
 gates:

@@ -4,6 +4,7 @@ import { generateConfig, generateEnv, WRITER_MODEL_DEFAULTS, type InitAnswers } 
 const all: InitAnswers = {
   useAnthropic: true, useOpenAI: true, useGoogle: true,
   writerProvider: 'anthropic', writerModel: WRITER_MODEL_DEFAULTS.anthropic,
+  maxIterations: 3,
   enableSast: true, writeKeys: false,
 };
 
@@ -74,5 +75,16 @@ describe('init generators', () => {
     expect(WRITER_MODEL_DEFAULTS.anthropic).toBe('claude-sonnet-4-6');
     expect(WRITER_MODEL_DEFAULTS.openai).toBe('gpt-4o');
     expect(WRITER_MODEL_DEFAULTS.google).toBe('gemini-2.5-pro');
+  });
+
+  it('honours custom max_iterations and emits the comment block', () => {
+    const yml = generateConfig({ ...all, maxIterations: 7 });
+    expect(yml).toContain('max_iterations: 7');
+    expect(yml).toContain('full-rotation-clean');
+  });
+
+  it('allows max_iterations: 0 (initial scan + final verification only)', () => {
+    const yml = generateConfig({ ...all, maxIterations: 0 });
+    expect(yml).toContain('max_iterations: 0');
   });
 });

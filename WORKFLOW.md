@@ -21,6 +21,17 @@ A "reader" and a "writer" can be the **same model** with different system prompt
 
 The simplest mode. No LLM calls, no API keys required.
 
+```mermaid
+flowchart LR
+    src[Source tree] --> sg[semgrep]
+    sg --> es[eslint]
+    es --> np[npm audit]
+    np --> norm[Normalize to Finding schema]
+    norm --> out[Print JSON to stdout]
+```
+
+<details><summary>Pseudo-code</summary>
+
 ```
 1. Read source tree
 2. Run each enabled SAST tool sequentially (in src/sast/index.ts order):
@@ -30,8 +41,9 @@ The simplest mode. No LLM calls, no API keys required.
 3. Normalize each tool's output to the unified Finding schema
 4. Print summary as JSON to stdout; no report file written
 ```
+</details>
 
-> SAST tools are run sequentially rather than in parallel because they're typically I/O- and CPU-light, the orchestration overhead of `Promise.all` rarely pays off, and sequential execution makes failure attribution easier.
+> SAST tools run sequentially rather than in parallel — they're typically I/O- and CPU-light, the orchestration overhead of `Promise.all` rarely pays off, and sequential execution makes failure attribution easier.
 
 Use it when you want a fast, free, AI-free triage.
 
@@ -40,6 +52,30 @@ Use it when you want a fast, free, AI-free triage.
 ## `review` mode — multi-model parallel one-shot
 
 Every reader scans the same code at the same time. Findings are merged by `{file, line-bucket, CWE}`. Confidence per finding is `min(1, |reportedBy| / 3)` so a finding flagged by 2 of 3 readers is high-confidence.
+
+```mermaid
+flowchart TD
+    src[Source tree] --> sast[SAST tools<br/>sequential: semgrep → eslint → npm-audit]
+    sast -.prior context.-> RA & RB & RC
+    src --> RA[Reader A<br/>e.g. anthropic-haiku<br/>OWASP skill]
+    src --> RB[Reader B<br/>e.g. openai-mini<br/>web-sec skill]
+    src --> RC[Reader C<br/>e.g. gemini-flash<br/>dependency skill]
+    RA --> agg[aggregate<br/>group by file, line//10, CWE<br/>confidence = min 1, reporters/3]
+    RB --> agg
+    RC --> agg
+    sast --> agg
+    agg --> md[reports/review-T.md]
+    agg --> json[reports/review-T.json]
+
+    classDef reader fill:#e1f5fe,stroke:#01579b
+    classDef sast fill:#fff3e0,stroke:#e65100
+    classDef out fill:#e8f5e9,stroke:#1b5e20
+    class RA,RB,RC reader
+    class sast sast
+    class md,json out
+```
+
+<details><summary>Pseudo-code</summary>
 
 ```
 1. Read source tree
@@ -59,6 +95,7 @@ Every reader scans the same code at the same time. Findings are merged by `{file
                    confidence = min(1, |reportedBy| / 3)
 5. Write report (markdown + JSON evidence)
 ```
+</details>
 
 **Output**: `reports/review-<timestamp>.{md,json}`. No file mutations.
 
@@ -72,7 +109,54 @@ The mode that does the actual work of fixing security issues. It uses **rotation
 
 > **0.5.0+ semantics** — if you read older docs (or a fork on an older version), the fix-mode loop worked differently before. See [CHANGELOG.md](CHANGELOG.md) for the migration notes. The pseudo-code below describes 0.5.0+ only.
 
+### High-level: all three phases at a glance
+
+```mermaid
+flowchart TD
+    start([secure-review fix ./src]) --> P1
+    subgraph P1[Phase 1 — Initial union scan]
+      sast1[SAST tools<br/>sequential] --> par1
+      par1[Readers in parallel] --> agg1[Aggregate → currentFindings]
+    end
+    P1 --> loop{i lt max_iterations?}
+    subgraph P2[Phase 2 — Iteration loop]
+      loop -- yes --> writer[Writer fixes currentFindings]
+      writer --> verifier[Verifier readers i mod N<br/>audits post-fix code]
+      verifier --> gate{Any gate fired?<br/>new CRITICAL · cost · time}
+      gate -- yes --> exit1([break])
+      gate -- no --> updateC[currentFindings = audit result]
+      updateC --> clean{Clean iters greater equal N?}
+      clean -- yes --> exit2([break — full rotation clean])
+      clean -- no --> incI[i plus equal 1] --> loop
+    end
+    loop -- no --> P3
+    subgraph P3[Phase 3 — Final verification]
+      finalpar[All readers in parallel] --> finalagg[Aggregate → finalFindings]
+    end
+    exit1 --> P3
+    exit2 --> P3
+    P3 --> done([reports/fix-T.md and .json])
+
+    classDef phase fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef terminal fill:#e8f5e9,stroke:#1b5e20
+    classDef gate fill:#fce4ec,stroke:#880e4f
+    class start,done terminal
+    class loop,gate,clean gate
+```
+
 ### Phase 1: Initial union scan
+
+```mermaid
+flowchart LR
+    src[Source tree] --> sast[SAST<br/>sequential]
+    src --> RA[Reader A]
+    src --> RB[Reader B]
+    src --> RC[Reader C]
+    RA & RB & RC & sast --> agg[aggregate]
+    agg --> cur[(currentFindings<br/>= writer's iter-1 to-do)]
+```
+
+<details><summary>Pseudo-code</summary>
 
 ```
 SAST(files)                          # sequential SAST tools
@@ -85,10 +169,58 @@ initialFindings = aggregate(
 currentFindings = initialFindings    # ← becomes the writer's iter-1 to-do list
                                      # (so no reader's blind spots get a free pass)
 ```
+</details>
 
 > SAST runs sequentially before the parallel reader fan-out. Readers always run in parallel in `fix` mode (no opt-out), so the `config.review.parallel` flag has no effect here.
 
 ### Phase 2: Iteration loop
+
+#### One iteration in time
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Cur as currentFindings
+    participant W as Writer<br/>(fixed model)
+    participant Files as Source files
+    participant SAST as SAST tools
+    participant V as Verifier readers[i mod N]<br/>(rotating)
+    participant Gate as Gates
+
+    Cur->>W: hand over to-do list
+    W->>Files: write modified files (sanitized)
+    Note over Files: NUL/control chars stripped
+    Files->>SAST: re-scan after fix
+    Files->>V: audit post-fix code
+    SAST-->>V: prior context
+    V-->>Cur: new audit becomes next currentFindings
+    V->>Gate: check new CRITICAL / cost / wall-time
+    Gate-->>Cur: proceed or break
+```
+
+#### Rotation across iterations (sequential_rotation, N=3)
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> iter1
+    iter1: iter 1<br/>verifier = A
+    iter2: iter 2<br/>verifier = B
+    iter3: iter 3<br/>verifier = C
+    iter4: iter 4<br/>verifier = A (wraps)
+    iter5: iter 5<br/>verifier = B
+    iter1 --> iter2 : continue
+    iter2 --> iter3 : continue
+    iter3 --> iter4 : continue (max_iter > N)
+    iter4 --> iter5 : continue
+    iter1 --> [*] : gate / clean rotation
+    iter2 --> [*] : gate / clean rotation
+    iter3 --> [*] : gate / clean rotation
+```
+
+The writer is always the same model (configured in `writer:`). Only the verifier rotates. With `max_iterations >= N`, every reader audits at least once — guaranteeing cross-model coverage.
+
+<details><summary>Pseudo-code</summary>
 
 ```
 let consecutiveCleanIters = 0
@@ -134,6 +266,7 @@ for i in 0 .. (max_iterations - 1):
     else:
         consecutiveCleanIters = 0
 ```
+</details>
 
 ### Phase 3: Final verification (parallel)
 
@@ -147,6 +280,18 @@ elif config.fix.final_verification == 'first_only':
 ```
 
 The final verification catches what individual iteration verifiers might have missed (because each iteration only had one reader's view). Recommended setting: `all_reviewers`.
+
+### On the relationship between `max_iterations` and N
+
+`max_iterations` (the loop ceiling) and N (the number of configured readers) are independent settings — they're not linked anywhere in code. The `init` command defaults `max_iterations` to N, but you can change it freely in `.secure-review.yml`. What happens with each pairing:
+
+| pairing | rotation sequence (N=3 → A,B,C) | behavior |
+|---|---|---|
+| `max_iter < N` (e.g. 2 vs 3) | A, B | reader C never audits during the loop; `consecutiveCleanIters >= N` early-exit cannot fire (would need 3 cleans, only 2 iters happen). Final verification still catches what C would have seen. |
+| `max_iter == N` (3 vs 3, default) | A, B, C | every reader audits exactly once; clean 1:1 mapping |
+| `max_iter > N` (e.g. 9 vs 3) | A, B, C, A, B, C, A, B, C | rotation wraps; early-exit can fire mid-loop after a full clean cycle |
+
+Recommendation: keep `max_iterations >= N` so the early-exit is structurally reachable. `max_iterations: 0` is a valid choice — it skips the loop entirely (just initial scan + final verification), useful for "audit-only" runs without any writer mutations.
 
 ### Why this design
 
@@ -163,6 +308,30 @@ Together these prevent the failure mode that motivated the 0.5.0 redesign: a sin
 
 Runs `review` mode on the PR diff and posts a single review with line-anchored comments.
 
+```mermaid
+flowchart TD
+    pr[PR opened/updated] --> fork{Fork PR?}
+    fork -- yes --> skip([skip — no secrets])
+    fork -- no --> diff[Parse PR patch<br/>commentable lines per file]
+    diff --> review[Run review mode]
+    review --> bucket{Per finding}
+    bucket -->|on commentable line<br/>in changed file| inline[Inline comment]
+    bucket -->|in changed file<br/>but unchanged line| summary[Review summary]
+    bucket -->|in untouched file| dropped[Dropped]
+    inline --> post[postPrReview → one PR review]
+    summary --> post
+    post --> chk{block_on_new_critical<br/>and CRITICAL on diff?}
+    chk -- yes --> fail([exit 2 — check fails])
+    chk -- no --> pass([exit 0 — check passes])
+
+    classDef terminal fill:#e8f5e9,stroke:#1b5e20
+    classDef bad fill:#ffebee,stroke:#b71c1c
+    class pass,skip terminal
+    class fail bad
+```
+
+<details><summary>Pseudo-code</summary>
+
 ```
 1. Verify PR context: GITHUB_EVENT_PATH, owner/repo/pr_number
 2. Skip if PR is from a fork (no secret access)
@@ -178,6 +347,7 @@ Runs `review` mode on the PR diff and posts a single review with line-anchored c
      - if config.gates.block_on_new_critical AND any CRITICAL inline finding → exit code 2 → check fails
      - else → exit code 0 → check passes
 ```
+</details>
 
 Fork PR safety: forks don't have access to repo secrets, so reviewers would fail to authenticate. Skipping prevents wasted CI minutes and confusing failure modes.
 

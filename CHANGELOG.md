@@ -2,6 +2,46 @@
 
 All notable changes to `secure-review`. Newest first.
 
+## [0.5.5] — 2026-04-26
+
+### `init` asks for `max_iterations` (defaults to N)
+
+Previously `max_iterations` was hardcoded to 3 in the generated YAML, which silently coupled the loop ceiling to the default reader count. With non-default reader counts, the "full-rotation-clean" early-exit could be structurally unreachable.
+
+`init` now asks:
+```
+Fix mode behavior:
+  Each iteration: writer fixes the current findings, then the next reader
+  in rotation audits with fresh eyes. The "full-rotation-clean" early-exit
+  only fires after N consecutive verifiers all see clean — so a meaningful
+  default is N (= 3 for your setup).
+  Max iterations of the fix loop? [3]
+```
+
+- Default = number of enabled readers (so the early-exit is always reachable)
+- Free-form non-negative integer (1, 5, 10, etc.)
+- `0` is allowed → skips the loop entirely; just initial scan + final verification (audit-only mode)
+- Warns if user picks `max_iterations < N` that the early-exit can't fire
+- Generated YAML now includes a comment block explaining the relationship
+
+### WORKFLOW.md gets Mermaid diagrams
+
+GitHub renders Mermaid natively; npm landing page only shows README so this doc is GitHub-first anyway. Added:
+- `scan` mode: simple sequential SAST flowchart
+- `review` mode: parallel reader fan-out + dedup flowchart
+- `fix` mode: high-level 3-phase flowchart with all gates and decision diamonds
+- `fix` mode iteration: sequence diagram showing the writer → verifier interaction in time
+- `fix` mode rotation: state diagram showing verifier hopping A→B→C→A→…
+- `pr` mode: bucket-split flowchart (inline / summary / dropped)
+
+Pseudo-code retained as collapsible `<details>` blocks under each diagram for those who want to read precise logic.
+
+### New "max_iterations vs N" section in WORKFLOW.md
+
+Explains what happens when the loop ceiling is less than, equal to, or greater than the reader count, with a recommendation table.
+
+---
+
 ## [0.5.4] — 2026-04-26
 
 ### Documentation accuracy fixes (caught by independent validator agents)

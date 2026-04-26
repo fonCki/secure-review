@@ -9,6 +9,7 @@ export interface InitAnswers {
     useGoogle: boolean;
     writerProvider: ProviderName;
     writerModel: string;
+    maxIterations: number;
     enableSast: boolean;
     writeKeys: boolean;
     anthropicKey?: string;
