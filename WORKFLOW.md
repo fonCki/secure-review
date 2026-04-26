@@ -181,19 +181,22 @@ currentFindings = initialFindings    # ← becomes the writer's iter-1 to-do lis
 sequenceDiagram
     autonumber
     participant Cur as currentFindings
-    participant W as Writer<br/>(fixed model)
     participant Files as Source files
     participant SAST as SAST tools
-    participant V as Verifier readers[i mod N]<br/>(rotating)
+    participant W as Writer (fixed model)
+    participant V as Verifier (rotating)
     participant Gate as Gates
 
+    Note over Cur,Gate: One iteration i — verifier = readers[i mod N]
+
+    Cur->>Files: snapshot beforeFiles (re-read tree)
+    Files->>SAST: pre-writer scan → sastBefore
     Cur->>W: hand over to-do list
-    W->>Files: write modified files (sanitized)
-    Note over Files: NUL/control chars stripped
-    Files->>SAST: re-scan after fix
+    W->>Files: write modified files (sanitized — NUL/control chars stripped)
+    Files->>SAST: post-writer re-scan → sastAfter
     Files->>V: audit post-fix code
-    SAST-->>V: prior context
-    V-->>Cur: new audit becomes next currentFindings
+    SAST-->>V: sastAfter as prior context (when inject_into_reviewer_context)
+    V-->>Cur: aggregate(verifier + sastAfter) → new currentFindings
     V->>Gate: check new CRITICAL / cost / wall-time
     Gate-->>Cur: proceed or break
 ```

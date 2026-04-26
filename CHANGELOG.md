@@ -2,6 +2,17 @@
 
 All notable changes to `secure-review`. Newest first.
 
+## [0.5.6] — 2026-04-26
+
+### Sequence-diagram fixes (caught by Gemini validator on 0.5.5)
+
+- Mermaid `sequenceDiagram` doesn't reliably support `<br/>` inside `participant ... as` aliases — they render as literal `<br/>` text in many viewers. Collapsed each participant alias to a single line.
+- The 0.5.5 sequence diagram skipped the **pre-writer** SAST + file-read step. The actual code (`src/modes/fix.ts`) reads `beforeFiles` and runs `sastBefore` BEFORE the writer fires (recorded in `IterationRecord.sastBefore`), so the diagram was missing a load-bearing step. Added it back.
+
+Pure docs accuracy. No behavior changes.
+
+---
+
 ## [0.5.5] — 2026-04-26
 
 ### `init` asks for `max_iterations` (defaults to N)
