@@ -1,8 +1,21 @@
 # secure-review
 
-**Multi-model security review for AI-generated code.** CLI and GitHub Action that runs several LLM reviewers (Anthropic, OpenAI, Google) and SAST tools (Semgrep, ESLint, npm audit) against your codebase. Findings are aggregated across reviewers — overlap becomes a confidence signal. Two modes: `review` (report only, PR comments) and `fix` (writer applies fixes in a cross-model rotating loop).
+[![npm version](https://img.shields.io/npm/v/secure-review.svg)](https://www.npmjs.com/package/secure-review)
+[![npm downloads](https://img.shields.io/npm/dm/secure-review.svg)](https://www.npmjs.com/package/secure-review)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Built for the ETH Case Studies seminar *"Secure Code despite AI"* (252-3811-00L). The design is grounded in recent LLM-security research showing that (1) SAST alone is nearly blind to AI-generated code, and (2) same-model self-review loops often regress (see *Research context* below). The tool operationalizes the cross-model-review pattern the industry uses informally.
+**Multi-model security review for AI-generated code.** CLI and GitHub Action that runs several LLM reviewers (Anthropic, OpenAI, Google) and SAST tools (Semgrep, ESLint, npm audit) against your codebase. Findings are aggregated across reviewers — overlap becomes a confidence signal. Four modes: `scan` (SAST only), `review` (multi-model report), `fix` (cross-model rotating loop applies fixes), `pr` (GitHub Action entrypoint posting line-anchored comments).
+
+```bash
+npm install --save-dev secure-review        # https://www.npmjs.com/package/secure-review
+npx secure-review init                      # interactive scaffold
+npx secure-review review ./src              # report — no file changes
+npx secure-review fix ./src                 # report + apply fixes via cross-model loop
+```
+
+> **How it actually works under the hood** — see [WORKFLOW.md](WORKFLOW.md) for the full per-mode pseudo-code (read this if you're evaluating the methodology, not just running the tool).
+
+The design is grounded in recent LLM-security research showing that (1) SAST alone is nearly blind to AI-generated code, and (2) same-model self-review loops often regress. The tool operationalizes the cross-model-review pattern the industry uses informally.
 
 ## Why this, not GitHub Copilot PR review?
 
@@ -127,32 +140,7 @@ GITHUB_TOKEN=...
 
 ## Modes
 
-### `review` — no mutation
-
-Each reviewer runs in parallel. SAST runs alongside. Findings are deduped by `{file, line-bucket, CWE}` — overlapping findings merge, and `reportedBy` accumulates names. Confidence = `min(1, |reportedBy| / 3)`, so a finding flagged by 2 of 3 reviewers is high-confidence.
-
-```bash
-secure-review review ./src
-```
-
-Output: `reports/review-<timestamp>.md` (human-readable) and `reports/review-<timestamp>.json` (Condition-D-compatible evidence JSON — plots directly against the experiment baselines).
-
-### `fix` — cross-model rotating loop
-
-```bash
-secure-review fix ./src --max-iterations 3 --max-cost-usd 20
-```
-
-1. Initial scan (reviewer[0] + SAST).
-2. Iteration N: reviewer[N % len] reviews → aggregate with fresh SAST → Writer applies fixes → reviewer re-reviews fixed code → diff.
-3. Gates: halts on new-critical-introduced, cost cap, or wall-time cap.
-4. Final verification pass by all reviewers.
-
-This is the cross-model rotating loop: each iteration a different reviewer audits the writer's output, reducing the blind-spot overlap you get from single-model self-review.
-
-### `pr` — GitHub Action entrypoint
-
-Runs `review` mode on the PR diff, posts a single review with line-anchored comments. Fork PRs are skipped by default (they don't have secret access). Fails the check if any CRITICAL finding overlaps a changed line.
+> Each mode below is the friendly summary. For the full per-step pseudo-code, see [WORKFLOW.md](WORKFLOW.md).
 
 ### `scan` — SAST only
 
@@ -160,7 +148,49 @@ Runs `review` mode on the PR diff, posts a single review with line-anchored comm
 secure-review scan ./src
 ```
 
-Runs Semgrep + ESLint + npm audit with the same normalization as the AI reviewers use. No API calls.
+Runs Semgrep + ESLint + npm audit (parallel) and normalizes their output to the same `Finding` schema the AI readers use. No LLM calls, no API keys required. Cheapest pre-commit triage.
+
+### `review` — multi-model parallel one-shot
+
+```bash
+secure-review review ./src
+```
+
+Every reader (e.g. anthropic-haiku + openai-mini + gemini-flash) scans the **same code** in **parallel** + SAST runs alongside. Findings are deduped by `{file, line-bucket, CWE}` — overlapping findings merge, and `reportedBy` accumulates names. Confidence per finding is `min(1, |reportedBy| / 3)`, so a finding flagged by 2 of 3 readers is high-confidence.
+
+No file mutations. Output: `reports/review-<timestamp>.{md,json}`.
+
+### `fix` — cross-model rotating loop *(0.5.0+ semantics)*
+
+```bash
+secure-review fix ./src --max-iterations 3 --max-cost-usd 20
+```
+
+The mode that actually fixes things. Three phases:
+
+1. **Initial union scan** — *all* readers run in parallel + SAST. The aggregated union becomes the writer's iter-1 to-do list (no reader's blind spots get a free pass).
+2. **Iteration loop** (rotating verifier per iter):
+   - Step A: Writer applies fixes for the current findings list (iter 1: union; iter 2+: previous verifier's audit).
+   - Step B: Next reader in rotation audits the writer's output with fresh eyes (different model = different blind spots).
+   - Step C: That audit becomes the next iteration's input.
+   - The loop only exits when **N consecutive verifiers** all see clean (full rotation), or a gate fires (`block_on_new_critical`, `max_cost_usd`, `max_wall_time_minutes`).
+3. **Final verification** — all readers in parallel re-scan the final state. Catches anything the per-iteration verifiers missed individually.
+
+The writer is **always the same model**; the verifier rotates. This prevents the writer from drifting toward "code that satisfies one specific model" — every iteration a different judge shows up.
+
+> Earlier versions (pre-0.5.0) used a different loop: each iteration's reviewer scanned alone, single-reviewer-zero exited the loop early, and the initial scan was a vanity baseline metric. See [CHANGELOG.md](CHANGELOG.md) for the migration notes.
+
+Output: `reports/fix-<timestamp>.{md,json}` plus modified source files.
+
+### `pr` — GitHub Action entrypoint
+
+Runs `review` mode on the PR diff and posts a single review with line-anchored inline comments. Findings are split into three buckets:
+
+- **inline** — finding on a changed line in a changed file → posted as inline comment
+- **summary** — finding in a changed file but on an unchanged line → mentioned in the review summary
+- **dropped** — finding in an untouched file → not posted
+
+Fork PRs are skipped by default (forks don't have secret access). Fails the check if any CRITICAL finding lands on a diff line.
 
 ## Architecture
 
@@ -229,20 +259,6 @@ pnpm build            # library (dist/)
 pnpm build:action     # Action bundle (dist-action/index.js) — commit with PRs that touch src/
 ```
 
-## Research context
-
-This tool is the Phase 5 deliverable for:
-
-- *Case Studies from Practice Seminar FS2026* (ETH Zurich 252-3811-00L)
-- Team: Alfonso Pedro Ridao, Shana Stampfli
-- Supervisor: Ilya Vasilenko
-
-Prior work cited in the design:
-- Alrashedy et al. 2024 — "Can LLMs Patch Security Issues?" (external-feedback loops beat self-feedback by 17.6%)
-- Ullah et al. 2024 — "LLMs Cannot Reliably Identify Vulnerabilities"
-- Huang et al. 2024 (NeurIPS) — "LLMs Cannot Self-Correct Reasoning Yet"
-- Pearce et al. 2021 — "Assessing Security of Copilot Code"
-
 ## License
 
-MIT © 2026 Alfonso Pedro Ridao
+MIT © 2026 Alfonso Pedro Ridao, Shana Stampfli

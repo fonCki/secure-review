@@ -2,6 +2,27 @@
 
 All notable changes to `secure-review`. Newest first.
 
+## [0.5.3] — 2026-04-26
+
+### Documentation overhaul
+
+- **`fix` mode in README was stale** — described pre-0.5.0 behavior (single-reviewer pre-scan, single-reviewer-zero exit, initial scan as vanity metric). Now correctly describes the 0.5.0+ rotating-verifier loop with initial union, full-rotation-clean exit, and all three phases.
+- **New `WORKFLOW.md`** with the full per-mode pseudo-code (scan, review, fix, pr) — adapted from the internal methodology doc, scrubbed of seminar-specific notes. Read this if you're evaluating the methodology rather than just running the tool.
+- **README opening rewritten**: now lists all four modes (`scan`, `review`, `fix`, `pr`) instead of misleadingly saying "two modes". Quick start moved to the top with the npm install command and badges.
+- **Per-mode summaries in README** rewritten to be accurate and link to WORKFLOW.md for depth.
+- **npm badges added** to README (version, downloads, license).
+
+### License
+
+- **Co-author added**: Shana Stampfli.
+
+### README cleanup
+
+- Removed the "Research context" / "Phase 5 deliverable" / supervisor / cited-papers section — the README is now framed as a tool for users, not as a research artifact. Academic context belongs in a separate paper, not in the npm landing page.
+- Intro paragraph trimmed to drop the seminar reference.
+
+---
+
 ## [0.5.2] — 2026-04-25
 
 ### Anthropic prefill `{` for JSON-mode (Bug #11 hard fix)
