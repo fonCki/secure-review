@@ -261,6 +261,21 @@ async function main(): Promise<void> {
       }
     });
 
+  program
+    .command('setup-secrets')
+    .description('Set GitHub Action secrets via gh CLI (one secret per enabled provider).')
+    .option('-c, --config <file>', 'config file', '.secure-review.yml')
+    .option('--repo <owner/name>', 'override target repo (default: gh detects from current git remote)')
+    .action(async (opts: { config: string; repo?: string }) => {
+      try {
+        const { runSetupSecrets } = await import('./commands/setup-secrets.js');
+        await runSetupSecrets({ config: opts.config, repo: opts.repo });
+      } catch (err) {
+        log.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
   // When running inside GitHub Actions with no explicit subcommand, default to `pr`.
   // The action.yml runs this entry with inputs mapped to env vars but no argv
   // subcommand — without this shim the CLI would print --help and exit.

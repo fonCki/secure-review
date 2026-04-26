@@ -45,11 +45,14 @@ npx secure-review review ./src
 
 | Command | Purpose |
 |---|---|
-| `secure-review init` | Scaffold `.secure-review.yml` + `.env` (interactive) |
+| `secure-review init` | Scaffold `.secure-review.yml` + `.env` + (optional) `.github/workflows/secure-review.yml` |
 | `secure-review scan <path>` | SAST only — no AI calls, no API keys needed |
 | `secure-review review <path>` | Multi-model review, no file changes |
 | `secure-review fix <path>` | Iterative review → write → re-review loop |
+| `secure-review setup-secrets` | Push API keys from local `.env` to GitHub Action secrets via `gh` CLI |
 | `secure-review pr` | GitHub Action entry point (called by the workflow) |
+
+> **One key is enough.** You don't need keys for all three providers — secure-review runs with as few as **one reader**. Disable any provider during `init` (or remove its entry from `.secure-review.yml`) and the tool simply skips it. This is useful if you only have an OpenAI key, or want to keep cost down to a single provider.
 
 ## Quick start — GitHub Action
 
@@ -77,6 +80,28 @@ jobs:
 ```
 
 Open a PR — a single review is posted with one line-anchored comment per finding.
+
+### Setting GitHub Action secrets
+
+You need to set the API keys as GitHub repo secrets so the action can authenticate with the providers. Two ways:
+
+**A) Automated** (requires `gh` CLI installed and `gh auth login` done):
+```bash
+npx secure-review setup-secrets
+# Reads keys from .env, sets one secret per enabled provider via `gh secret set`.
+# Use --repo owner/name if not running inside a clone.
+```
+
+**B) Manual** (always works):
+```bash
+gh secret set ANTHROPIC_API_KEY    # paste when prompted
+gh secret set OPENAI_API_KEY
+gh secret set GOOGLE_API_KEY
+```
+
+Or via the web UI: `https://github.com/<owner>/<repo>/settings/secrets/actions` — click *New repository secret* for each key.
+
+Only set secrets for providers you actually enabled. If you only use OpenAI, just `OPENAI_API_KEY`. `GITHUB_TOKEN` is auto-provided by Actions — don't set it.
 
 ## Config (`.secure-review.yml`)
 

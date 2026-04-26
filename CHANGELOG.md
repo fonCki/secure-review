@@ -2,6 +2,44 @@
 
 All notable changes to `secure-review`. Newest first.
 
+## [0.5.8] — 2026-04-26
+
+### `secure-review setup-secrets` — automated GitHub secrets via `gh` CLI
+
+Anyone running the tool in CI needs the same set of provider keys configured as GitHub Actions secrets. Previously this meant clicking through the web UI one-by-one or running `gh secret set` per key by hand. Now:
+
+```bash
+npx secure-review setup-secrets
+```
+
+What it does:
+- Detects `gh` CLI is installed and authenticated; prints a clean install/login hint and exits if not
+- Reads `.secure-review.yml` to learn which providers are enabled
+- Pulls each enabled provider's `*_API_KEY` from the auto-loaded `.env`
+- Pipes the value to `gh secret set <NAME>` via **stdin** (the secret never appears on a shell command line or in the process list)
+- Skips silently for any key that's missing or matches placeholder patterns (`sk-ant-...`, `dummy`, etc.)
+- Reports `N set · N skipped · N failed`; non-zero exit if any fail
+
+Flags:
+- `--repo owner/name` to override target (default: `gh` detects from current git remote)
+- `-c, --config <file>` to point at a non-default `.secure-review.yml`
+
+### init now hints about `setup-secrets` in next steps
+
+After init scaffolds the workflow, the printed next-steps now mention:
+```
+After you push to GitHub, run: npx secure-review setup-secrets
+   (sets API keys as GitHub secrets via gh CLI; or set them manually in repo Settings → Secrets)
+```
+
+### README documents the "one-key-is-enough" path
+
+A new callout in the subcommands table makes it explicit: secure-review runs with as few as **one reader**. Disable any provider during init (or remove its entry from `.secure-review.yml`) and the tool simply skips it. Useful if you only have an OpenAI key, or want to keep cost down to a single provider.
+
+The new "Setting GitHub Action secrets" section in README documents both the automated path (`setup-secrets` subcommand) and the manual fallbacks (`gh secret set` per key, or the GitHub web UI URL).
+
+---
+
 ## [0.5.7] — 2026-04-26
 
 ### `init` now scaffolds the GitHub Actions workflow

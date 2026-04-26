@@ -104,6 +104,8 @@ async function runInit(opts = {}) {
         if (answers.githubAction === 'example') {
             console.log(`[36mℹ[0m To activate later: mv ${workflowPath} .github/workflows/secure-review.yml`);
         }
+        console.log(`[36mℹ[0m After you push to GitHub, run: npx secure-review setup-secrets`);
+        console.log(`   (sets API keys as GitHub secrets via gh CLI; or set them manually in repo Settings → Secrets)`);
     }
     else if (workflowAction === 'preexisted' && workflowPath) {
         console.log(`[33m![0m ${workflowPath} already exists — left untouched (pass --force to overwrite)`);
