@@ -2,6 +2,32 @@
 
 All notable changes to `secure-review`. Newest first.
 
+## [0.5.7] — 2026-04-26
+
+### `init` now scaffolds the GitHub Actions workflow
+
+A user shouldn't have to look up YAML and write `.github/workflows/secure-review.yml` by hand the first time they want to wire the tool into CI. `init` now asks:
+
+```
+GitHub Action:
+  Auto-runs the tool on every PR and posts inline review comments.
+  - active:  writes .github/workflows/secure-review.yml (runs on the next PR)
+  - example: writes .github/workflows/secure-review.yml.example
+             (you rename to .yml when you want to enable it)
+  - skip:    no CI file written
+  GitHub Action workflow? (active/example/skip) [example]
+```
+
+- Default = `example` (safer — won't auto-arm the action on the user's next PR push without an explicit rename)
+- Generated YAML only includes env vars for **enabled** providers — if you said no to Google in init, you don't need to set up a `GOOGLE_API_KEY` GitHub secret
+- Includes the `npm ci` step (without it, `node_modules/secure-review/skills/...` paths in the user's `.secure-review.yml` won't resolve in the runner — was a real foot-gun)
+- Permissions block is minimal (`contents: read`, `pull-requests: write`, `checks: write`)
+- Won't overwrite an existing workflow file unless `--force`
+
+A new exported `generateWorkflow(answers)` function lets other tools generate the same YAML programmatically.
+
+---
+
 ## [0.5.6] — 2026-04-26
 
 ### Sequence-diagram fixes (caught by Gemini validator on 0.5.5)

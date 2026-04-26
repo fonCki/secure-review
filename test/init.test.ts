@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { generateConfig, generateEnv, WRITER_MODEL_DEFAULTS, type InitAnswers } from '../src/commands/init.js';
+import { generateConfig, generateEnv, generateWorkflow, WRITER_MODEL_DEFAULTS, type InitAnswers } from '../src/commands/init.js';
 
 const all: InitAnswers = {
   useAnthropic: true, useOpenAI: true, useGoogle: true,
   writerProvider: 'anthropic', writerModel: WRITER_MODEL_DEFAULTS.anthropic,
   maxIterations: 3,
   enableSast: true, writeKeys: false,
+  githubAction: 'example',
 };
 
 describe('init generators', () => {
@@ -86,5 +87,32 @@ describe('init generators', () => {
   it('allows max_iterations: 0 (initial scan + final verification only)', () => {
     const yml = generateConfig({ ...all, maxIterations: 0 });
     expect(yml).toContain('max_iterations: 0');
+  });
+
+  it('generates GitHub Actions workflow with all enabled providers + npm ci', () => {
+    const wf = generateWorkflow(all);
+    expect(wf).toContain('name: Secure Review');
+    expect(wf).toContain('uses: fonCki/secure-review@v1');
+    expect(wf).toContain('npm ci');
+    expect(wf).toContain('ANTHROPIC_API_KEY');
+    expect(wf).toContain('OPENAI_API_KEY');
+    expect(wf).toContain('GOOGLE_API_KEY');
+    expect(wf).toContain('GITHUB_TOKEN');
+    expect(wf).toContain('on: pull_request');
+  });
+
+  it('omits unused-provider env vars from the workflow', () => {
+    const wf = generateWorkflow({ ...all, useAnthropic: false, useGoogle: false });
+    expect(wf).not.toContain('ANTHROPIC_API_KEY');
+    expect(wf).not.toContain('GOOGLE_API_KEY');
+    expect(wf).toContain('OPENAI_API_KEY');
+    expect(wf).toContain('GITHUB_TOKEN');
+  });
+
+  it('workflow always grants the right minimum permissions', () => {
+    const wf = generateWorkflow(all);
+    expect(wf).toContain('contents: read');
+    expect(wf).toContain('pull-requests: write');
+    expect(wf).toContain('checks: write');
   });
 });

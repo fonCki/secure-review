@@ -7,9 +7,10 @@
  * and have a working config in under 30 seconds, without reading the
  * README first.
  */
-import { writeFile, access, readFile } from 'node:fs/promises';
+import { writeFile, access, readFile, mkdir } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
+import { dirname } from 'node:path';
 
 export interface InitOptions {
   force?: boolean;
@@ -17,6 +18,8 @@ export interface InitOptions {
 }
 
 export type ProviderName = 'anthropic' | 'openai' | 'google';
+
+export type GithubActionMode = 'active' | 'example' | 'skip';
 
 export interface InitAnswers {
   useAnthropic: boolean;
@@ -27,6 +30,7 @@ export interface InitAnswers {
   maxIterations: number;
   enableSast: boolean;
   writeKeys: boolean;
+  githubAction: GithubActionMode;
   anthropicKey?: string;
   openaiKey?: string;
   googleKey?: string;
@@ -84,6 +88,23 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
   await writeFile('.secure-review.yml', yaml, 'utf8');
   const envAction = await appendOrCreate(envFile, envContent);
 
+  // GitHub Actions workflow file (active or example, depending on user choice)
+  let workflowAction: 'created' | 'skipped' | 'preexisted' = 'skipped';
+  let workflowPath: string | undefined;
+  if (answers.githubAction !== 'skip') {
+    workflowPath =
+      answers.githubAction === 'active'
+        ? '.github/workflows/secure-review.yml'
+        : '.github/workflows/secure-review.yml.example';
+    if ((await fileExists(workflowPath)) && !opts.force) {
+      workflowAction = 'preexisted';
+    } else {
+      await mkdir(dirname(workflowPath), { recursive: true });
+      await writeFile(workflowPath, generateWorkflow(answers), 'utf8');
+      workflowAction = 'created';
+    }
+  }
+
   console.log('');
   console.log('[32m✔[0m Created .secure-review.yml');
   if (envAction === 'created') {
@@ -92,6 +113,18 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
     console.log(`[32m✔[0m Appended secure-review section to existing ${envFile}`);
   } else {
     console.log(`[36mℹ[0m ${envFile} already had secure-review keys — left untouched`);
+  }
+  if (workflowAction === 'created' && workflowPath) {
+    console.log(`[32m✔[0m Created ${workflowPath}`);
+    if (answers.githubAction === 'example') {
+      console.log(
+        `[36mℹ[0m To activate later: mv ${workflowPath} .github/workflows/secure-review.yml`,
+      );
+    }
+  } else if (workflowAction === 'preexisted' && workflowPath) {
+    console.log(
+      `[33m![0m ${workflowPath} already exists — left untouched (pass --force to overwrite)`,
+    );
   }
   console.log('');
   console.log(
@@ -126,6 +159,9 @@ function defaultAnswers(): InitAnswers {
     maxIterations: 3,
     enableSast: true,
     writeKeys: false,
+    // Safer default for --yes: emit the example file (renamed by user to activate)
+    // rather than auto-arming the action on the user's next PR push.
+    githubAction: 'example',
   };
 }
 
@@ -220,6 +256,19 @@ async function ask(): Promise<InitAnswers> {
     );
     console.log('');
 
+    console.log('GitHub Action:');
+    console.log('  Auto-runs the tool on every PR and posts inline review comments.');
+    console.log('  - active:  writes .github/workflows/secure-review.yml (runs on the next PR)');
+    console.log('  - example: writes .github/workflows/secure-review.yml.example');
+    console.log('             (you rename to .yml when you want to enable it)');
+    console.log('  - skip:    no CI file written');
+    const githubAction = (await askChoice(
+      'GitHub Action workflow?',
+      ['active', 'example', 'skip'],
+      'example',
+    )) as GithubActionMode;
+    console.log('');
+
     console.log('API keys:');
     const writeKeys = await askBool(
       'Enter API keys now? (No = create .env.example for you to fill in later)',
@@ -246,6 +295,7 @@ async function ask(): Promise<InitAnswers> {
       maxIterations,
       enableSast,
       writeKeys,
+      githubAction,
       ...(anthropicKey !== undefined ? { anthropicKey } : {}),
       ...(openaiKey !== undefined ? { openaiKey } : {}),
       ...(googleKey !== undefined ? { googleKey } : {}),
@@ -327,6 +377,50 @@ gates:
   block_on_new_critical: true
   max_cost_usd: 5
   max_wall_time_minutes: 15
+`;
+}
+
+/**
+ * Render the GitHub Actions workflow for this project. Only includes env
+ * vars for providers the user actually enabled, so the user only needs to
+ * set up GitHub secrets for the keys they actually use.
+ *
+ * The `npm ci` step is critical: without it, the action runs in a fresh
+ * checkout where `node_modules/secure-review/skills/...` (the path written
+ * into the user's .secure-review.yml) doesn't exist and skill loading fails.
+ */
+export function generateWorkflow(a: InitAnswers): string {
+  const envLines: string[] = [];
+  if (a.useAnthropic) envLines.push('          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}');
+  if (a.useOpenAI)    envLines.push('          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}');
+  if (a.useGoogle)    envLines.push('          GOOGLE_API_KEY:    ${{ secrets.GOOGLE_API_KEY }}');
+  envLines.push('          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}');
+
+  return `# Generated by 'secure-review init'. Edit freely.
+# To activate this workflow if it was emitted as .yml.example, rename to .yml.
+name: Secure Review
+on: pull_request
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.fork == false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # npm ci is required so the .secure-review.yml's
+      # node_modules/secure-review/skills/... paths resolve in the runner.
+      - run: npm ci
+      - uses: fonCki/secure-review@v1
+        env:
+${envLines.join('\n')}
 `;
 }
 
