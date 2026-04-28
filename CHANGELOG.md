@@ -2,6 +2,37 @@
 
 All notable changes to `secure-review`. Newest first.
 
+## [0.5.11] — 2026-04-28
+
+End-to-end self-audit release. The full audit lives in `CODEX_AUDIT_2026-04-28.md`.
+
+### Fixes
+
+- **Writer path containment.** The fix-mode writer now refuses output paths that resolve outside the scan root, including absolute paths, `../` traversal, and symlink escape (`lstat` per segment + `realpath` against root, ENOENT-safe so newly-created files still work).
+- **SAST path normalization.** Findings from semgrep, eslint, npm-audit, and AI reviewers are now normalized to scan-root-relative paths before aggregation and PR posting. This fixes silent dedup misses across tools and dropped PR comments for findings that arrived with absolute paths.
+- **`review.parallel: false` actually serializes.** The previous implementation built every reviewer promise eagerly and then chose between `Promise.all` and sequential await — calls always started concurrently. Reviewer calls are now constructed only when awaited; a regression test asserts max 1 active call.
+- **Gate ordering.** `evaluateGates` now runs after the initial scan, inside the iteration loop (existing), and around final verification. Cost / wall-time caps stop the run before mutation and before final verification, not just inside the loop.
+- **PR file listing pagination.** Switched from a single `per_page: 300` request to `octokit.paginate(octokit.pulls.listFiles)`. PRs with more than 300 files now have full commentable-line maps.
+- **Per-finding salvage on parse errors.** A single malformed model finding no longer discards an entire reviewer run. Parser validates each item independently, keeps the valid ones, and warns on the malformed ones.
+- **Output paths honored.** `output.report`, `output.findings`, and `output.diff` config fields now route through the CLI write paths (were ignored — CLI hard-coded `reports/<mode>-<timestamp>.{md,json}`). `output.diff` is populated from `git diff --binary --no-ext-diff` after fix-mode writes.
+- **Schema cleanup.** Removed the unused `scope` field from `ModelRef`. Zod strips unknown keys, so existing configs with `scope:` still parse.
+- **`init` config validity.** `secure-review init` now writes `max_iterations` values in the schema-valid range (1-10) and the generated comment no longer claims `0` is valid.
+- **Action inputs.** `max-cost-usd` is now wired through the CLI override; `mode: fix` in the GitHub Action is announced as a deprecated no-op (still review-only) so existing consumer workflows don't break.
+
+### Documentation
+
+- README and WORKFLOW.md validated end-to-end against source. 13 inaccuracies fixed (gate ordering, SAST timing, aggregation rules using `lineStart` instead of `line`, `first_reviewer` vs `first_only`, PR mode reviewing the full checkout, `assets/architecture.png` → `docs/images/architecture-overview.png`, etc.).
+- 8 architecture diagrams generated via gpt-image-2 (built-in `image_gen`), replacing the previous Mermaid blocks: `architecture-overview`, `scan-mode`, `review-mode`, `fix-mode-loop`, `initial-union-scan`, `fix-iteration`, `reviewer-rotation`, `pr-mode`. Every label corresponds to a real module/function/field in the code.
+- `docs/` now ships in the npm tarball.
+
+### Breaking change
+
+- `max_iterations: 0` in `.secure-review.yml` is now rejected by Zod (the schema always required min(1); only the `init` template incorrectly suggested 0). The `--max-iterations 0` CLI flag still works for an audit-only run.
+
+### Tests
+
+- 86/86 passing (was 76). New tests cover writer traversal/symlink rejection, sequential reviewer concurrency probe, gate timing for initial and final-verification overruns, octokit pagination shape, parser per-finding salvage, and SAST path normalization in aggregate.
+
 ## [0.5.10] — 2026-04-26
 
 ### Architecture diagram in the README
