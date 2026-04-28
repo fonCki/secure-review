@@ -2,6 +2,32 @@
 
 All notable changes to `secure-review`. Newest first.
 
+## [0.5.12] — 2026-04-28
+
+Safety patch driven by three parallel post-publish audits (`BUGHUNT_REPORT_2026-04-28.md`, `TEST_GAPS_2026-04-28.md`, `ROBUSTNESS_REPORT_2026-04-28.md`). Six surgical fixes; 124/124 tests passing (up from 86/86).
+
+### Behavior changes (worth flagging)
+
+- **Exit code 3 now means "review unavailable."** When all configured reviewers fail (auth, rate limits, network), or final verification fails, `review` / `fix` / `pr` exit with code 3 instead of 0. Previous behavior — silently returning zero findings on a fully broken run — is the highest-risk failure mode for a CI security tool. Existing exit codes are unchanged: `1` = fatal, `2` = gate-blocked. Status check (exit 3) takes precedence over gates (exit 2).
+- **`--max-iterations` and `--max-cost-usd` now validated at parse time.** Invalid values (`abc`, `-1`, `0`, `11`, `1.5`, `NaN`, etc.) are rejected with a clear commander error before config loading, instead of silently bypassing the schema and running zero iterations.
+- **Writer is now constrained to a per-iteration allowlist** built from scanned source files plus files referenced by current findings. `.env*`, `.git/`, and `.github/` are refused outright even if accidentally on the allowlist. Brand-new files outside the allowlist are skipped (opt-in support deferred to 0.6.0).
+
+### Fixes
+
+- **Reviewer-health tracking.** New `reviewStatus: 'ok' | 'degraded' | 'failed'` plus `failedReviewers` / `succeededReviewers` lists in `ReviewModeOutput`, `FixModeOutput`, JSON evidence, Markdown reports, and PR summary bodies. A failed final-verification reviewer (or last-iteration verifier when `final_verification: 'none'`) forces `failed` regardless of initial scan health.
+- **PR gate completeness.** `block_on_new_high` and `max_cost_usd` now actually fire in PR mode. Severity counts cover inline + summary-on-touched-files (a CRITICAL outside commentable diff lines but in a touched file no longer slips through). New pure helper `evaluatePrGates(prResult, totalCostUSD, gates)`.
+- **Diff parser trailing-newline off-by-one.** `commentableLinesFromPatch('@@ -1,1 +1,1 @@\n line\n')` now returns `{1}` instead of `{1, 2}`. Eliminates a class of GitHub 422 errors when the patch ends with a newline.
+- **Documentation accuracy.** `WORKFLOW.md` no longer documents the rejected `--max-iterations 0` value; `examples/.secure-review.yml` describes the actual SAST-runs-first semantics.
+
+### Tests
+
+- `test/reviewer-health.test.ts` (new), `test/fix-reviewer-health.test.ts` (new), `test/cli-exit-codes.test.ts` (new) — including a real-binary `spawnSync` test that asserts exit code 3 on all-fail.
+- `test/writer-allowlist.test.ts` (new) — exercises real fs with `mkdtemp` for `.env`, `.git/`, `.github/` rejection.
+- `test/cli-options.test.ts` (new) — `parseMaxIterations` and `parseMaxCostUsd` with 18 cases.
+- `test/github-pr.test.ts` extended — `evaluatePrGates` cases for HIGH inline, CRITICAL summary-on-touched, cost overrun.
+- `test/diff.test.ts` extended — terminal-newline patch, hunk-length-bounded, blank context preservation.
+- Total: **124/124 passing** across 22 test files.
+
 ## [0.5.11] — 2026-04-28
 
 End-to-end self-audit release. The full audit lives in `CODEX_AUDIT_2026-04-28.md`.

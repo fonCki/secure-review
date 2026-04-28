@@ -13,5 +13,6 @@ export declare function serializeCodeContext(files: FileContent[], maxChars?: nu
 export declare function writeFileSafe(path: string, content: string): Promise<void>;
 export declare function isPathInside(parent: string, child: string): boolean;
 export declare function normalizeScanPath(file: string, root: string): string;
+export declare function normalizeRelPath(file: string): string;
 export declare function normalizeFindingPaths(findings: Finding[], root: string): Finding[];
 //# sourceMappingURL=files.d.ts.map

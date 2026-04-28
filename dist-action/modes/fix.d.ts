@@ -2,6 +2,7 @@ import type { Env, SecureReviewConfig } from '../config/schema.js';
 import type { Finding, SeverityBreakdown } from '../findings/schema.js';
 import { type ReviewerRunOutput } from '../roles/reviewer.js';
 import { type WriterRunOutput } from '../roles/writer.js';
+import { type ReviewHealthStatus } from '../util/review-health.js';
 export interface FixModeInput {
     root: string;
     config: SecureReviewConfig;
@@ -50,6 +51,9 @@ export interface FixModeOutput {
     gateBlocked: boolean;
     gateReasons: string[];
     filesChanged: string[];
+    reviewStatus: ReviewHealthStatus;
+    failedReviewers: string[];
+    succeededReviewers: string[];
     totalCostUSD: number;
     totalDurationMs: number;
     verification?: ReviewerRunOutput[];

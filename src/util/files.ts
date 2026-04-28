@@ -140,6 +140,10 @@ export function normalizeScanPath(file: string, root: string): string {
   return rel.replace(/\\/g, '/').replace(/^\.\//, '');
 }
 
+export function normalizeRelPath(file: string): string {
+  return file.trim().replace(/\\/g, '/').replace(/^(\.\/)+/, '');
+}
+
 export function normalizeFindingPaths(findings: Finding[], root: string): Finding[] {
   return findings.map((f) => ({
     ...f,

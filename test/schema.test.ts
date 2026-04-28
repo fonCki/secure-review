@@ -67,6 +67,8 @@ describe('EvidenceJsonSchema', () => {
       new_findings_introduced: 0,
       findings_resolved: 3,
       resolution_rate_pct: 60,
+      review_status: 'ok',
+      failed_reviewers: [],
     });
     expect(parsed.task_id).toBe('01-auth');
     expect(parsed.findings_by_severity_after_fix.CRITICAL).toBe(0);

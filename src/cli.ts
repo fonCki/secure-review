@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -16,13 +16,13 @@ if (existsSync('.env')) {
     // older Node, or malformed .env — fall back silently
   }
 }
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import { loadConfig, loadEnv } from './config/load.js';
 import { runReviewMode } from './modes/review.js';
 import { runFixMode } from './modes/fix.js';
 import { renderReviewReport, renderFixReport } from './reporters/markdown.js';
 import { renderReviewEvidence, renderFixEvidence } from './reporters/json.js';
-import { postPrReview } from './reporters/github-pr.js';
+import { evaluatePrGates, postPrReview } from './reporters/github-pr.js';
 import { writeFileSafe } from './util/files.js';
 import { log, setQuiet, setVerbose } from './util/logger.js';
 
@@ -49,11 +49,44 @@ function outputPath(
   return resolve(path.replaceAll('{timestamp}', stamp));
 }
 
-function applyMaxCostOverride(config: Awaited<ReturnType<typeof loadConfig>>['config'], value?: string): void {
-  if (!value) return;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`Invalid max cost: ${value}`);
-  config.gates.max_cost_usd = parsed;
+export function parseMaxIterations(raw: string): number {
+  if (raw.trim() === '') throw new InvalidArgumentError('max iterations must be an integer from 1 to 10');
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 10) {
+    throw new InvalidArgumentError('max iterations must be an integer from 1 to 10');
+  }
+  return n;
+}
+
+export function parseMaxCostUsd(raw: string): number {
+  if (raw.trim() === '') throw new InvalidArgumentError('max cost must be a finite number greater than or equal to 0');
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new InvalidArgumentError('max cost must be a finite number greater than or equal to 0');
+  }
+  return n;
+}
+
+function applyMaxCostOverride(config: Awaited<ReturnType<typeof loadConfig>>['config'], value?: number): void {
+  if (value === undefined) return;
+  config.gates.max_cost_usd = value;
+}
+
+function enforceReviewHealth(output: {
+  reviewStatus: 'ok' | 'degraded' | 'failed';
+  failedReviewers: string[];
+}): void {
+  if (output.reviewStatus === 'failed') {
+    log.error(`Reviewers unavailable: ${formatReviewerNames(output.failedReviewers)}`);
+    process.exit(3);
+  }
+  if (output.reviewStatus === 'degraded') {
+    log.warn(`Review degraded; failed reviewer(s): ${formatReviewerNames(output.failedReviewers)}`);
+  }
+}
+
+function formatReviewerNames(names: string[]): string {
+  return names.length > 0 ? names.join(', ') : '(unknown)';
 }
 
 async function readGitDiff(root: string): Promise<string> {
@@ -130,6 +163,7 @@ async function main(): Promise<void> {
         const { config, configDir } = await loadConfig(opts.config);
         const env = loadEnv();
         const output = await runReviewMode({ root: resolve(path), config, configDir, env });
+        enforceReviewHealth(output);
 
         const stamp = timestamp();
         const mdPath = outputPath(
@@ -170,21 +204,22 @@ async function main(): Promise<void> {
     .argument('<path>', 'path to review and fix')
     .option('-c, --config <file>', 'config file', '.secure-review.yml')
     .option('-o, --output-dir <dir>', 'output directory', './reports')
-    .option('--max-iterations <n>', 'override max iterations')
-    .option('--max-cost-usd <n>', 'override cost cap')
+    .option('--max-iterations <n>', 'override max iterations', parseMaxIterations)
+    .option('--max-cost-usd <n>', 'override cost cap', parseMaxCostUsd)
     .option('--task-id <id>', 'task identifier for evidence JSON', 'unknown')
     .option('--run <n>', 'run number', '1')
     .action(
       async (
         path: string,
-        opts: { config: string; outputDir: string; maxIterations?: string; maxCostUsd?: string; taskId: string; run: string },
+        opts: { config: string; outputDir: string; maxIterations?: number; maxCostUsd?: number; taskId: string; run: string },
       ) => {
         try {
           const { config, configDir } = await loadConfig(opts.config);
           const env = loadEnv();
-          if (opts.maxIterations) config.fix.max_iterations = Number(opts.maxIterations);
+          if (opts.maxIterations !== undefined) config.fix.max_iterations = opts.maxIterations;
           applyMaxCostOverride(config, opts.maxCostUsd);
           const output = await runFixMode({ root: resolve(path), config, configDir, env });
+          enforceReviewHealth(output);
 
           const stamp = timestamp();
           const mdPath = outputPath(
@@ -237,8 +272,8 @@ async function main(): Promise<void> {
     .description('GitHub Action entrypoint — review PR and post line-anchored comments.')
     .option('-c, --config <file>', 'config file', '.secure-review.yml')
     .option('--autofix', 'deprecated no-op; PR entrypoint always runs review mode', false)
-    .option('--max-cost-usd <n>', 'override cost cap')
-    .action(async (opts: { config: string; autofix: boolean; maxCostUsd?: string }) => {
+    .option('--max-cost-usd <n>', 'override cost cap', parseMaxCostUsd)
+    .action(async (opts: { config: string; autofix: boolean; maxCostUsd?: number }) => {
       try {
         const { config, configDir } = await loadConfig(opts.config);
         const env = loadEnv();
@@ -296,6 +331,7 @@ async function main(): Promise<void> {
           configDir,
           env,
         });
+        enforceReviewHealth(output);
 
         const prResult = await postPrReview(output, {
           owner,
@@ -306,10 +342,9 @@ async function main(): Promise<void> {
           commentableLines,
         });
 
-        if (config.gates.block_on_new_critical && prResult.criticalOnDiff > 0) {
-          log.error(
-            `${prResult.criticalOnDiff} CRITICAL finding(s) on diff lines — failing check`,
-          );
+        const prGate = evaluatePrGates(prResult, output.totalCostUSD, config.gates);
+        if (prGate.blocked) {
+          log.error(`PR gate blocked: ${prGate.reasons.join('; ')}`);
           process.exit(2);
         }
       } catch (err) {
@@ -378,7 +413,19 @@ async function main(): Promise<void> {
   await program.parseAsync(argv);
 }
 
-main().catch((err) => {
-  log.error(err instanceof Error ? err.message : String(err));
-  process.exit(1);
-});
+function isDirectExecution(): boolean {
+  if (!process.argv[1]) return false;
+  const modulePath = fileURLToPath(import.meta.url);
+  try {
+    return realpathSync(resolve(process.argv[1])) === realpathSync(modulePath);
+  } catch {
+    return resolve(process.argv[1]) === modulePath;
+  }
+}
+
+if (isDirectExecution()) {
+  main().catch((err) => {
+    log.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });
+}

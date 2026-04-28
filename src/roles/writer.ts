@@ -2,7 +2,13 @@ import type { ModelAdapter } from '../adapters/types.js';
 import type { ModelRef } from '../config/schema.js';
 import { extractJson } from '../findings/parse.js';
 import type { Finding } from '../findings/schema.js';
-import { isPathInside, serializeCodeContext, writeFileSafe, type FileContent } from '../util/files.js';
+import {
+  isPathInside,
+  normalizeRelPath,
+  serializeCodeContext,
+  writeFileSafe,
+  type FileContent,
+} from '../util/files.js';
 import { log } from '../util/logger.js';
 import { lstat, realpath } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
@@ -14,10 +20,12 @@ export interface WriterRunInput {
   root: string;
   files: FileContent[];
   findings: Finding[];
+  allowedFiles: Set<string>;
 }
 
 export interface WriterRunOutput {
   filesChanged: string[];
+  skipped: string[];
   rawText: string;
   usage: {
     inputTokens: number;
@@ -91,6 +99,7 @@ export async function runWriter(input: WriterRunInput): Promise<WriterRunOutput>
   if (findings.length === 0) {
     return {
       filesChanged: [],
+      skipped: [],
       rawText: '',
       usage: { inputTokens: 0, outputTokens: 0, costUSD: 0 },
       durationMs: Date.now() - started,
@@ -120,6 +129,7 @@ ${findingsList}`;
   // succeeds. Cost: at most one extra LLM call per failed iteration.
   let totalUsage = { inputTokens: 0, outputTokens: 0, costUSD: 0 };
   let lastRawText = '';
+  let skipped: string[] = [];
   for (let attempt = 1; attempt <= 2; attempt++) {
     const userForAttempt =
       attempt === 1
@@ -143,18 +153,31 @@ ${findingsList}`;
       };
       const changes = parsed.changes ?? [];
       const filesChanged: string[] = [];
+      skipped = [];
       for (const c of changes) {
-        if (!c.file || typeof c.content !== 'string') continue;
-        const target = await resolveWriterTarget(root, c.file);
-        const sanitized = sanitizeWriterContent(c.content, c.file);
+        if (typeof c.file !== 'string' || !c.file || typeof c.content !== 'string') continue;
+        const file = normalizeRelPath(c.file);
+        if (isProtectedWriterPath(file)) {
+          skipped.push(file);
+          log.warn(`Writer refused protected path: ${file}`);
+          continue;
+        }
+        if (!input.allowedFiles.has(file)) {
+          skipped.push(file);
+          log.warn(`Writer skipped non-allowlisted path: ${file}`);
+          continue;
+        }
+        const target = await resolveWriterTarget(root, file);
+        const sanitized = sanitizeWriterContent(c.content, file);
         await writeFileSafe(target, sanitized);
-        filesChanged.push(c.file);
+        filesChanged.push(file);
       }
       if (attempt === 2) {
         log.info(`Writer retry succeeded on attempt 2 (parsed JSON correctly).`);
       }
       return {
         filesChanged,
+        skipped,
         rawText: response.text,
         usage: totalUsage,
         durationMs: Date.now() - started,
@@ -169,6 +192,7 @@ ${findingsList}`;
       log.warn(`Writer failed: ${message}`);
       return {
         filesChanged: [],
+        skipped,
         rawText: lastRawText,
         usage: totalUsage,
         durationMs: Date.now() - started,
@@ -179,11 +203,16 @@ ${findingsList}`;
   // Defensive fallthrough — TypeScript doesn't know the loop always returns.
   return {
     filesChanged: [],
+    skipped,
     rawText: lastRawText,
     usage: totalUsage,
     durationMs: Date.now() - started,
     error: 'Writer exhausted retries',
   };
+}
+
+function isProtectedWriterPath(file: string): boolean {
+  return file.startsWith('.env') || file.startsWith('.git/') || file.startsWith('.github/');
 }
 
 async function resolveWriterTarget(root: string, file: string): Promise<string> {

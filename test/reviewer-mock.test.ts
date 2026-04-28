@@ -75,6 +75,7 @@ describe('runReviewer integration (with mock adapter)', () => {
       files: [VULN_FILE],
     });
     expect(out.error).toBeDefined();
+    expect(out.status).toBe('failed');
     expect(out.findings).toEqual([]);
   });
 

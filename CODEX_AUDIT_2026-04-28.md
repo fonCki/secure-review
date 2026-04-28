@@ -129,3 +129,23 @@ Scope followed: `src/` was audited read-only. I changed only `README.md`, `WORKF
 - Finding 10 fixed: CLI report/findings output paths now honor configured `output.report` and `output.findings`, and fix mode writes `output.diff` from `git diff`; covered by typecheck.
 
 Summary: `pnpm test` passed 86/86 tests; `pnpm typecheck` passed; `git diff --stat src/ test/` total: 15 files changed, 420 insertions(+), 90 deletions(-).
+
+## Codex Fix Pass v0.5.12 — 2026-04-28
+
+- Fix 1 fixed: reviewer runs now report `status: ok|failed`; review/fix/PR modes compute `reviewStatus`, failed reviewer names, and succeeded reviewer names. CLI review, fix, and PR now exit `3` when reviewers are unavailable, and this status check takes precedence over gate exit `2`. Degraded runs warn and continue. JSON, Markdown, and PR summaries include the review-health status.
+
+- Fix 2 fixed: writer changes are constrained to a per-iteration allowlist built from scanned files plus files referenced by current findings. `.env*`, `.git/`, and `.github/` writes are refused even if allowlisted; non-allowlisted new files are skipped.
+
+- Fix 3 fixed: PR posting now returns inline, touched-file, and dropped severity counts. PR gates evaluate `block_on_new_high`, `block_on_new_critical` across inline plus summary-on-touched findings, and `max_cost_usd`.
+
+- Fix 4 fixed: `--max-iterations` and `--max-cost-usd` are parsed by commander coercion with `InvalidArgumentError`; invalid iteration values are rejected before config overrides are applied.
+
+- Fix 5 fixed: diff parsing no longer treats the terminal empty string from a newline-terminated patch as a context line, while preserving blank context rows, unknown-prefix fallback, and `\ No newline at end of file` handling.
+
+- Fix 6 fixed: `WORKFLOW.md` no longer documents `--max-iterations 0`, and `examples/.secure-review.yml` now describes SAST as running before reviewers and feeding reviewer context/output aggregation.
+
+New test files added: `test/reviewer-health.test.ts`, `test/fix-reviewer-health.test.ts`, `test/cli-exit-codes.test.ts`, `test/writer-allowlist.test.ts`, `test/cli-options.test.ts`.
+
+Extended tests: `test/github-pr.test.ts`, `test/diff.test.ts`, `test/reporter.test.ts`, `test/reviewer-mock.test.ts`, `test/schema.test.ts`, `test/writer-sanitize.test.ts`.
+
+Final verification: `pnpm typecheck && npm test` passed; `npm test` passed 124/124 tests.

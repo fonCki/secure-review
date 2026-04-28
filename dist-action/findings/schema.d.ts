@@ -128,6 +128,8 @@ export declare const EvidenceJsonSchema: z.ZodObject<{
     session_id: z.ZodOptional<z.ZodString>;
     generation_time_seconds: z.ZodOptional<z.ZodNumber>;
     total_cost_usd: z.ZodOptional<z.ZodNumber>;
+    review_status: z.ZodString;
+    failed_reviewers: z.ZodArray<z.ZodString, "many">;
     reviewers: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
     iterations: z.ZodOptional<z.ZodNumber>;
     per_iteration: z.ZodOptional<z.ZodArray<z.ZodObject<{
@@ -209,6 +211,8 @@ export declare const EvidenceJsonSchema: z.ZodObject<{
     semgrep_after_fix: number;
     eslint_after_fix: number;
     lines_of_code_fixed: number;
+    review_status: string;
+    failed_reviewers: string[];
     reviewers?: string[] | undefined;
     source_condition?: string | undefined;
     review_report?: string | undefined;
@@ -257,6 +261,8 @@ export declare const EvidenceJsonSchema: z.ZodObject<{
     new_findings_introduced: number;
     findings_resolved: number;
     resolution_rate_pct: number;
+    review_status: string;
+    failed_reviewers: string[];
     reviewers?: string[] | undefined;
     source_condition?: string | undefined;
     semgrep_after_fix?: number | undefined;

@@ -27,7 +27,10 @@ function commentableLinesFromPatch(patch) {
         return lines;
     let newLineNo = 0;
     let inHunk = false;
-    for (const raw of patch.split('\n')) {
+    const patchLines = patch.split('\n');
+    if (patchLines.at(-1) === '')
+        patchLines.pop();
+    for (const raw of patchLines) {
         // Hunk header: @@ -oldStart,oldLen +newStart,newLen @@ optional
         const m = raw.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
         if (m && m[1]) {
@@ -46,8 +49,8 @@ function commentableLinesFromPatch(patch) {
         else if (raw.startsWith('-')) {
             // deletion — no advance on new side
         }
-        else if (raw.startsWith(' ') || raw === '') {
-            // context line (including blank context rows rendered without the leading space)
+        else if (raw.startsWith(' ')) {
+            // context line
             lines.add(newLineNo);
             newLineNo++;
         }

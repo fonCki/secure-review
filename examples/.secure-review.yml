@@ -24,9 +24,9 @@ reviewers:
     model: gemini-2.5-pro
     skill: ../skills/dependency-reviewer.md
 
-# SAST runs alongside the AI reviewers — the findings flow into the same
-# aggregator. High-confidence findings are those flagged by multiple
-# reviewers OR by SAST + AI.
+# SAST runs first; its findings are injected into reviewer context (when
+# `inject_into_reviewer_context: true`) and merged into the aggregated output.
+# High-confidence findings are those flagged by multiple reviewers OR by SAST + AI.
 sast:
   enabled: true
   tools: [semgrep, eslint, npm_audit]

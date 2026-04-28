@@ -15,6 +15,7 @@ export interface ReviewerRunInput {
 
 export interface ReviewerRunOutput {
   reviewer: string;
+  status: 'ok' | 'failed';
   findings: Finding[];
   rawText: string;
   usage: {
@@ -88,6 +89,7 @@ ${codeContext}`;
     const findings = parseFindings(response.text, reviewer.name);
     return {
       reviewer: reviewer.name,
+      status: 'ok',
       findings,
       rawText: response.text,
       usage: response.usage,
@@ -98,6 +100,7 @@ ${codeContext}`;
     log.warn(`Reviewer ${reviewer.name} failed: ${message}`);
     return {
       reviewer: reviewer.name,
+      status: 'failed',
       findings: [],
       rawText: '',
       usage: { inputTokens: 0, outputTokens: 0, costUSD: 0 },

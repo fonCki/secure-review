@@ -65,6 +65,8 @@ export const EvidenceJsonSchema = z.object({
   session_id: z.string().optional(),
   generation_time_seconds: z.number().optional(),
   total_cost_usd: z.number().optional(),
+  review_status: z.string(),
+  failed_reviewers: z.array(z.string()),
   // Extended fields for multi-reviewer runs
   reviewers: z.array(z.string()).optional(),
   iterations: z.number().int().optional(),

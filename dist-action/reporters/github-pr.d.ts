@@ -1,3 +1,5 @@
+import type { SecureReviewConfig } from '../config/schema.js';
+import type { SeverityBreakdown } from '../findings/schema.js';
 import type { ReviewModeOutput } from '../modes/review.js';
 export interface PrPostOptions {
     owner: string;
@@ -18,6 +20,13 @@ export interface PrPostResult {
     inlineCount: number;
     summaryOnlyCount: number;
     criticalOnDiff: number;
+    severityCountsInDiff: SeverityBreakdown;
+    severityCountsTouched: SeverityBreakdown;
+    droppedCount: number;
+}
+export interface PrGateDecision {
+    blocked: boolean;
+    reasons: string[];
 }
 /**
  * Posts the aggregated findings as a single GitHub PR review.
@@ -32,4 +41,5 @@ export interface PrPostResult {
  * Findings in files the PR doesn't touch at all are dropped (noise).
  */
 export declare function postPrReview(output: ReviewModeOutput, opts: PrPostOptions): Promise<PrPostResult>;
+export declare function evaluatePrGates(prResult: PrPostResult, totalCostUSD: number, gates: SecureReviewConfig['gates']): PrGateDecision;
 //# sourceMappingURL=github-pr.d.ts.map

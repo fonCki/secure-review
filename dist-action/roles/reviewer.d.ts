@@ -11,6 +11,7 @@ export interface ReviewerRunInput {
 }
 export interface ReviewerRunOutput {
     reviewer: string;
+    status: 'ok' | 'failed';
     findings: Finding[];
     rawText: string;
     usage: {

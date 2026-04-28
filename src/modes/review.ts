@@ -7,6 +7,7 @@ import { runReviewer, type ReviewerRunOutput } from '../roles/reviewer.js';
 import { runAllSast, type SastSummary } from '../sast/index.js';
 import { normalizeFindingPaths, readSourceTree } from '../util/files.js';
 import { log } from '../util/logger.js';
+import { summarizeReviewHealth, type ReviewHealthStatus } from '../util/review-health.js';
 import { spinner } from '../util/spinner.js';
 
 export interface ReviewModeInput {
@@ -21,6 +22,9 @@ export interface ReviewModeOutput {
   breakdown: SeverityBreakdown;
   sast: SastSummary;
   perReviewer: ReviewerRunOutput[];
+  reviewStatus: ReviewHealthStatus;
+  failedReviewers: string[];
+  succeededReviewers: string[];
   totalCostUSD: number;
   totalDurationMs: number;
 }
@@ -55,6 +59,7 @@ export async function runReviewMode(input: ReviewModeInput): Promise<ReviewModeO
     await runReviewers(config, configDir, env, files, sastContextFindings),
     root,
   );
+  const health = summarizeReviewHealth(reviewerRuns);
 
   // 5. Merge all findings (AI + SAST) into one aggregated set
   const allFindings: Finding[] = [];
@@ -69,6 +74,9 @@ export async function runReviewMode(input: ReviewModeInput): Promise<ReviewModeO
     breakdown: severityBreakdown(aggregated),
     sast,
     perReviewer: reviewerRuns,
+    reviewStatus: health.reviewStatus,
+    failedReviewers: health.failedReviewers,
+    succeededReviewers: health.succeededReviewers,
     totalCostUSD: totalCost,
     totalDurationMs: Date.now() - started,
   };
@@ -96,7 +104,7 @@ async function runReviewers(
     const result = await runReviewer({ reviewer, adapter, skill, files, priorFindings });
     completed += 1;
     sp.update(
-      `Reviewers: ${completed}/${N} done (last: ${reviewer.name} → ${result.error ? 'FAILED' : `${result.findings.length} findings`})`,
+      `Reviewers: ${completed}/${N} done (last: ${reviewer.name} → ${result.status === 'failed' ? 'FAILED' : `${result.findings.length} findings`})`,
     );
     return result;
   };
@@ -105,7 +113,7 @@ async function runReviewers(
     : await sequential(config.reviewers, runOne);
   sp.succeed(`Reviewers complete: ${N} done`);
   for (const r of results) {
-    const status = r.error ? 'FAILED' : `${r.findings.length} findings`;
+    const status = r.status === 'failed' ? 'FAILED' : `${r.findings.length} findings`;
     log.info(`  ${r.reviewer}: ${status} ($${r.usage.costUSD.toFixed(3)}, ${(r.durationMs / 1000).toFixed(1)}s)`);
   }
   return results;

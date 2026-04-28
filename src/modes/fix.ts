@@ -8,8 +8,9 @@ import { evaluateGates } from '../gates/evaluate.js';
 import { runReviewer, type ReviewerRunOutput } from '../roles/reviewer.js';
 import { runWriter, type WriterRunOutput } from '../roles/writer.js';
 import { runAllSast } from '../sast/index.js';
-import { normalizeFindingPaths, readSourceTree } from '../util/files.js';
+import { normalizeFindingPaths, normalizeRelPath, readSourceTree } from '../util/files.js';
 import { log } from '../util/logger.js';
+import { summarizeReviewHealth, type ReviewHealthStatus } from '../util/review-health.js';
 import { spinner } from '../util/spinner.js';
 
 export interface FixModeInput {
@@ -54,6 +55,9 @@ export interface FixModeOutput {
   gateBlocked: boolean;
   gateReasons: string[];
   filesChanged: string[];
+  reviewStatus: ReviewHealthStatus;
+  failedReviewers: string[];
+  succeededReviewers: string[];
   totalCostUSD: number;
   totalDurationMs: number;
   verification?: ReviewerRunOutput[];
@@ -124,7 +128,7 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
         });
         completedReviewers += 1;
         initSpinner.update(
-          `Initial scan: ${completedReviewers}/${N} reader${N === 1 ? '' : 's'} done (last: ${r.ref.name} → ${result.findings.length})`,
+          `Initial scan: ${completedReviewers}/${N} reader${N === 1 ? '' : 's'} done (last: ${r.ref.name} → ${result.status === 'failed' ? 'FAILED' : result.findings.length})`,
         );
         return result;
       }),
@@ -184,6 +188,10 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
     const findingsToFix = currentFindings;
     const beforeFiles = await readSourceTree(root);
     const sastBeforeRun = await runAllSast(root, config.sast);
+    const allowedFiles = new Set<string>([
+      ...beforeFiles.map((f) => normalizeRelPath(f.relPath)),
+      ...findingsToFix.map((f) => normalizeRelPath(f.file)),
+    ]);
 
     let writerRun: WriterRunOutput | undefined;
     if (findingsToFix.length > 0) {
@@ -197,6 +205,7 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
         root,
         files: beforeFiles,
         findings: findingsToFix,
+        allowedFiles,
       });
       totalCost += writerRun.usage.costUSD;
       writerRun.filesChanged.forEach((f) => allChangedFiles.add(f));
@@ -328,7 +337,7 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
           });
           completedFinal += 1;
           finalSpinner.update(
-            `Final verification: ${completedFinal}/${verifiers.length} reader${verifiers.length === 1 ? '' : 's'} done (last: ${r.ref.name} → ${result.findings.length})`,
+            `Final verification: ${completedFinal}/${verifiers.length} reader${verifiers.length === 1 ? '' : 's'} done (last: ${r.ref.name} → ${result.status === 'failed' ? 'FAILED' : result.findings.length})`,
           );
           return result;
         }),
@@ -360,6 +369,23 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
     currentFindings = combined;
   }
 
+  const verificationRuns = verification ?? [];
+  const terminalVerifierRuns =
+    verificationRuns.length > 0
+      ? verificationRuns
+      : config.fix.final_verification === 'none' && iterations.length > 0
+        ? [iterations[iterations.length - 1]!.reviewerRun]
+        : [];
+  const healthRuns = [
+    ...initialReviewerRuns,
+    ...iterations.map((it) => it.reviewerRun),
+    ...verificationRuns,
+  ];
+  const health = summarizeReviewHealth(healthRuns);
+  if (terminalVerifierRuns.some((run) => run.status === 'failed')) {
+    health.reviewStatus = 'failed';
+  }
+
   return {
     initialFindings,
     finalFindings: currentFindings,
@@ -369,6 +395,9 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
     gateBlocked,
     gateReasons,
     filesChanged: Array.from(allChangedFiles),
+    reviewStatus: health.reviewStatus,
+    failedReviewers: health.failedReviewers,
+    succeededReviewers: health.succeededReviewers,
     totalCostUSD: totalCost,
     totalDurationMs: Date.now() - start,
     verification,

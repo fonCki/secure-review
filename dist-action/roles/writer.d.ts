@@ -9,9 +9,11 @@ export interface WriterRunInput {
     root: string;
     files: FileContent[];
     findings: Finding[];
+    allowedFiles: Set<string>;
 }
 export interface WriterRunOutput {
     filesChanged: string[];
+    skipped: string[];
     rawText: string;
     usage: {
         inputTokens: number;

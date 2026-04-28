@@ -43,6 +43,31 @@ describe('commentableLinesFromPatch', () => {
     expect(lines).toEqual([1, 2, 3, 4, 11, 12, 13]);
   });
 
+  it('does not treat a terminal newline as an extra context line', () => {
+    const patch = '@@ -1,1 +1,1 @@\n line\n';
+    expect([...commentableLinesFromPatch(patch)].sort((a, b) => a - b)).toEqual([1]);
+  });
+
+  it('matches terminal-newline behavior when the patch has no trailing newline', () => {
+    const patch = '@@ -1,1 +1,1 @@\n line';
+    expect([...commentableLinesFromPatch(patch)].sort((a, b) => a - b)).toEqual([1]);
+  });
+
+  it('does not advance past added lines because of a terminal newline', () => {
+    const patch = '@@ -1,2 +1,3 @@\n+a\n+b\n+c\n';
+    expect([...commentableLinesFromPatch(patch)].sort((a, b) => a - b)).toEqual([1, 2, 3]);
+  });
+
+  it('still counts a single-space blank context row inside a hunk', () => {
+    const patch = '@@ -1,2 +1,2 @@\n line\n \n';
+    expect([...commentableLinesFromPatch(patch)].sort((a, b) => a - b)).toEqual([1, 2]);
+  });
+
+  it('keeps an added line before the no-newline marker without adding the marker', () => {
+    const patch = '@@ -0,0 +1,1 @@\n+a\n\\ No newline at end of file\n';
+    expect([...commentableLinesFromPatch(patch)].sort((a, b) => a - b)).toEqual([1]);
+  });
+
   it('commentableLinesByFile returns a map', () => {
     const map = commentableLinesByFile([
       { filename: 'a.ts', patch: '@@ -1,1 +1,2 @@\n line\n+added' },

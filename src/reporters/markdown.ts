@@ -6,6 +6,7 @@ export function renderReviewReport(output: ReviewModeOutput): string {
   const parts: string[] = [];
   parts.push(`# Secure Review Report`);
   parts.push(`\nGenerated: ${new Date().toISOString()}`);
+  parts.push(reviewStatusLine(output));
   parts.push(`\nTotal cost: $${output.totalCostUSD.toFixed(3)}`);
   parts.push(`Duration: ${(output.totalDurationMs / 1000).toFixed(1)}s\n`);
 
@@ -46,6 +47,7 @@ export function renderFixReport(output: FixModeOutput): string {
   const parts: string[] = [];
   parts.push(`# Secure Review — Fix Mode Report`);
   parts.push(`\nGenerated: ${new Date().toISOString()}`);
+  parts.push(reviewStatusLine(output));
   parts.push(`Total cost: $${output.totalCostUSD.toFixed(3)}`);
   parts.push(`Duration: ${(output.totalDurationMs / 1000).toFixed(1)}s`);
   parts.push(`Gate blocked: ${output.gateBlocked ? 'YES' : 'no'}`);
@@ -104,6 +106,17 @@ function row(
   r: { ran: boolean; count: number; error?: string },
 ): string {
   return `| ${name} | ${r.ran ? '✅' : '⚠️'} | ${r.count} | ${r.error ?? ''} |`;
+}
+
+function reviewStatusLine(output: {
+  reviewStatus: 'ok' | 'degraded' | 'failed';
+  failedReviewers: string[];
+}): string {
+  if (output.reviewStatus === 'ok') return `**Status:** OK`;
+  if (output.reviewStatus === 'degraded') {
+    return `**Status:** DEGRADED — ${output.failedReviewers.length} reviewer(s) failed: ${output.failedReviewers.join(', ')}`;
+  }
+  return `**Status:** FAILED — all reviewers unavailable`;
 }
 
 function renderFinding(f: Finding): string {

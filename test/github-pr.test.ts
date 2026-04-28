@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Finding } from '../src/findings/schema.js';
+import type { Finding, SeverityBreakdown } from '../src/findings/schema.js';
 import type { ReviewModeOutput } from '../src/modes/review.js';
+import type { PrPostResult } from '../src/reporters/github-pr.js';
 
 const mocks = vi.hoisted(() => ({
   createReview: vi.fn(),
@@ -14,7 +15,7 @@ vi.mock('@octokit/rest', () => ({
   })),
 }));
 
-const { postPrReview } = await import('../src/reporters/github-pr.js');
+const { evaluatePrGates, postPrReview } = await import('../src/reporters/github-pr.js');
 
 function finding(overrides: Partial<Finding> = {}): Finding {
   return {
@@ -42,6 +43,9 @@ function output(findings: Finding[]): ReviewModeOutput {
       npmAudit: { ran: false, count: 0 },
     },
     perReviewer: [],
+    reviewStatus: 'ok',
+    failedReviewers: [],
+    succeededReviewers: [],
     totalCostUSD: 0,
     totalDurationMs: 0,
   };
@@ -63,5 +67,78 @@ describe('postPrReview path normalization', () => {
     const params = mocks.createReview.mock.calls[0][0];
     expect(result.inlineCount).toBe(1);
     expect(params.comments[0].path).toBe('src/a.ts');
+  });
+});
+
+const zeroBreakdown: SeverityBreakdown = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 };
+
+function prResult(overrides: Partial<PrPostResult>): PrPostResult {
+  return {
+    inlineCount: 0,
+    summaryOnlyCount: 0,
+    criticalOnDiff: 0,
+    severityCountsInDiff: { ...zeroBreakdown },
+    severityCountsTouched: { ...zeroBreakdown },
+    droppedCount: 0,
+    ...overrides,
+  };
+}
+
+function gates(overrides = {}) {
+  return {
+    block_on_new_critical: false,
+    block_on_new_high: false,
+    max_cost_usd: 20,
+    max_wall_time_minutes: 15,
+    ...overrides,
+  };
+}
+
+describe('evaluatePrGates', () => {
+  it('blocks high findings when block_on_new_high is enabled', () => {
+    const decision = evaluatePrGates(
+      prResult({
+        inlineCount: 1,
+        severityCountsInDiff: { ...zeroBreakdown, HIGH: 1 },
+        severityCountsTouched: { ...zeroBreakdown, HIGH: 1 },
+      }),
+      0,
+      gates({ block_on_new_high: true }),
+    );
+
+    expect(decision.blocked).toBe(true);
+    expect(decision.reasons.join('; ')).toContain('HIGH');
+  });
+
+  it('blocks critical findings that are summary-only on touched files', () => {
+    const decision = evaluatePrGates(
+      prResult({
+        summaryOnlyCount: 1,
+        severityCountsTouched: { ...zeroBreakdown, CRITICAL: 1 },
+      }),
+      0,
+      gates({ block_on_new_critical: true }),
+    );
+
+    expect(decision.blocked).toBe(true);
+    expect(decision.reasons.join('; ')).toContain('CRITICAL');
+  });
+
+  it('blocks when total cost exceeds the configured cap', () => {
+    const decision = evaluatePrGates(
+      prResult({}),
+      0.05,
+      gates({ max_cost_usd: 0.01 }),
+    );
+
+    expect(decision.blocked).toBe(true);
+    expect(decision.reasons.join('; ')).toContain('cost cap');
+  });
+
+  it('does not block when gates are off and no findings are present', () => {
+    const decision = evaluatePrGates(prResult({}), 0, gates());
+
+    expect(decision.blocked).toBe(false);
+    expect(decision.reasons).toEqual([]);
   });
 });

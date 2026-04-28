@@ -194,7 +194,7 @@ The final verification catches what individual iteration verifiers might have mi
 | `max_iter == N` (3 vs 3, default) | A, B, C | every reader audits exactly once; clean 1:1 mapping |
 | `max_iter > N` (e.g. 9 vs 3) | A, B, C, A, B, C, A, B, C | rotation wraps; early-exit can fire mid-loop after a full clean cycle |
 
-Recommendation: keep `max_iterations >= N` so the early-exit is structurally reachable. In `.secure-review.yml`, the schema currently accepts `max_iterations` from 1 to 10. The CLI override `--max-iterations 0` is applied after config loading and skips the loop entirely (initial scan + final verification), but `max_iterations: 0` in the config file is rejected in 0.5.10.
+Recommendation: keep `max_iterations >= N` so the early-exit is structurally reachable. In `.secure-review.yml`, the schema accepts `max_iterations` from 1 to 10; the CLI now rejects out-of-range overrides at parse time (since 0.5.12).
 
 ### Why this design
 
