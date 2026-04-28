@@ -1,6 +1,7 @@
 import { Octokit } from '@octokit/rest';
 import type { Finding } from '../findings/schema.js';
 import type { ReviewModeOutput } from '../modes/review.js';
+import { normalizeScanPath } from '../util/files.js';
 import { log } from '../util/logger.js';
 
 export interface PrPostOptions {
@@ -48,7 +49,9 @@ export async function postPrReview(
   let droppedOutsideTouchedFiles = 0;
 
   for (const f of output.findings) {
-    const lineSet = opts.commentableLines.get(f.file);
+    const file = normalizeScanPath(f.file, process.cwd());
+    const normalized = { ...f, file };
+    const lineSet = opts.commentableLines.get(file);
     if (!lineSet) {
       droppedOutsideTouchedFiles++;
       continue;
@@ -58,9 +61,9 @@ export async function postPrReview(
     // a commentable line rather than get pushed to the summary.
     const anchorLine = pickAnchorLine(f, lineSet);
     if (anchorLine !== null) {
-      inDiff.push({ ...f, lineStart: anchorLine });
+      inDiff.push({ ...normalized, lineStart: anchorLine });
     } else {
-      outOfDiffInTouchedFiles.push(f);
+      outOfDiffInTouchedFiles.push(normalized);
     }
   }
 

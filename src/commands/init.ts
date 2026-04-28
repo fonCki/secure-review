@@ -245,9 +245,11 @@ async function ask(): Promise<InitAnswers> {
     const N = enabledProviders.length;
     const maxIterInput = await askText(`  Max iterations of the fix loop? [${N}]`, true);
     const parsedMaxIter = maxIterInput ? Number.parseInt(maxIterInput, 10) : NaN;
-    const maxIterations = Number.isFinite(parsedMaxIter) && parsedMaxIter >= 0 ? parsedMaxIter : N;
+    const maxIterations = Number.isFinite(parsedMaxIter) && parsedMaxIter >= 1 && parsedMaxIter <= 10 ? parsedMaxIter : N;
     if (maxIterInput && !Number.isFinite(parsedMaxIter)) {
-      console.log(`    "${maxIterInput}" isn't a non-negative integer — using default ${N}`);
+      console.log(`    "${maxIterInput}" isn't an integer from 1 to 10 — using default ${N}`);
+    } else if (maxIterInput && (parsedMaxIter < 1 || parsedMaxIter > 10)) {
+      console.log(`    max_iterations must be between 1 and 10 — using default ${N}`);
     } else if (maxIterations < N) {
       console.log(
         `    Note: max_iterations=${maxIterations} < N=${N}; the "full-rotation-clean" early-exit cannot fire (needs ${N} consecutive cleans).`,
@@ -314,6 +316,7 @@ async function ask(): Promise<InitAnswers> {
 const SKILLS_BASE = 'node_modules/secure-review/skills';
 
 export function generateConfig(a: InitAnswers): string {
+  const maxIterations = normalizeMaxIterations(a.maxIterations);
   const reviewers: string[] = [];
   if (a.useAnthropic) {
     reviewers.push(
@@ -374,9 +377,8 @@ fix:
   mode: sequential_rotation
   # max_iterations is the loop ceiling. The "full-rotation-clean" early
   # exit needs N consecutive verifiers to all see clean (where N = number
-  # of readers above), so max_iterations >= N is recommended. Set to 0
-  # to skip the fix loop entirely (just initial scan + final verification).
-  max_iterations: ${a.maxIterations}
+  # of readers above), so max_iterations >= N is recommended.
+  max_iterations: ${maxIterations}
   final_verification: all_reviewers
 
 gates:
@@ -384,6 +386,11 @@ gates:
   max_cost_usd: 5
   max_wall_time_minutes: 15
 `;
+}
+
+function normalizeMaxIterations(n: number): number {
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(10, Math.max(1, Math.trunc(n)));
 }
 
 /**

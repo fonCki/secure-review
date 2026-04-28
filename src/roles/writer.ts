@@ -2,9 +2,10 @@ import type { ModelAdapter } from '../adapters/types.js';
 import type { ModelRef } from '../config/schema.js';
 import { extractJson } from '../findings/parse.js';
 import type { Finding } from '../findings/schema.js';
-import { serializeCodeContext, writeFileSafe, type FileContent } from '../util/files.js';
+import { isPathInside, serializeCodeContext, writeFileSafe, type FileContent } from '../util/files.js';
 import { log } from '../util/logger.js';
-import { join } from 'node:path';
+import { lstat, realpath } from 'node:fs/promises';
+import { join, relative, resolve } from 'node:path';
 
 export interface WriterRunInput {
   writer: ModelRef;
@@ -144,8 +145,8 @@ ${findingsList}`;
       const filesChanged: string[] = [];
       for (const c of changes) {
         if (!c.file || typeof c.content !== 'string') continue;
+        const target = await resolveWriterTarget(root, c.file);
         const sanitized = sanitizeWriterContent(c.content, c.file);
-        const target = join(root, c.file);
         await writeFileSafe(target, sanitized);
         filesChanged.push(c.file);
       }
@@ -183,4 +184,38 @@ ${findingsList}`;
     durationMs: Date.now() - started,
     error: 'Writer exhausted retries',
   };
+}
+
+async function resolveWriterTarget(root: string, file: string): Promise<string> {
+  const rootAbs = resolve(root);
+  const rootReal = await realpath(rootAbs);
+  const target = resolve(rootAbs, file);
+  if (!isPathInside(rootAbs, target)) {
+    throw new Error(`Writer refused to write outside scan root: ${file}`);
+  }
+
+  const rel = relative(rootAbs, target);
+  const parts = rel.split(/[\\/]+/).filter(Boolean);
+  let current = rootAbs;
+  for (const part of parts) {
+    current = join(current, part);
+    try {
+      const st = await lstat(current);
+      if (!st.isSymbolicLink()) continue;
+      let real: string;
+      try {
+        real = await realpath(current);
+      } catch {
+        throw new Error(`Writer refused to write through broken symlink: ${relative(rootAbs, current)}`);
+      }
+      if (!isPathInside(rootReal, real)) {
+        throw new Error(`Writer refused to write through symlink outside scan root: ${relative(rootAbs, current)}`);
+      }
+    } catch (err) {
+      if (err instanceof Error && 'code' in err && err.code === 'ENOENT') break;
+      throw err;
+    }
+  }
+
+  return target;
 }

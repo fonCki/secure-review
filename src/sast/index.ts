@@ -1,5 +1,6 @@
 import type { SecureReviewConfig } from '../config/schema.js';
 import type { Finding } from '../findings/schema.js';
+import { normalizeFindingPaths } from '../util/files.js';
 import { runEslint } from './eslint.js';
 import { runNpmAudit } from './npm-audit.js';
 import { runSemgrep } from './semgrep.js';
@@ -23,17 +24,17 @@ export async function runAllSast(path: string, config: SecureReviewConfig['sast'
   if (config.tools.includes('semgrep')) {
     const r = await runSemgrep(path);
     summary.semgrep = { ran: r.available, count: r.findings.length, error: r.error };
-    summary.findings.push(...r.findings);
+    summary.findings.push(...normalizeFindingPaths(r.findings, path));
   }
   if (config.tools.includes('eslint')) {
     const r = await runEslint(path);
     summary.eslint = { ran: r.available, count: r.findings.length, error: r.error };
-    summary.findings.push(...r.findings);
+    summary.findings.push(...normalizeFindingPaths(r.findings, path));
   }
   if (config.tools.includes('npm_audit')) {
     const r = await runNpmAudit(path);
     summary.npmAudit = { ran: r.available, count: r.findings.length, error: r.error };
-    summary.findings.push(...r.findings);
+    summary.findings.push(...normalizeFindingPaths(r.findings, path));
   }
   return summary;
 }

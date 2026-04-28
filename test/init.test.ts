@@ -84,9 +84,10 @@ describe('init generators', () => {
     expect(yml).toContain('full-rotation-clean');
   });
 
-  it('allows max_iterations: 0 (initial scan + final verification only)', () => {
+  it('clamps max_iterations below the schema minimum', () => {
     const yml = generateConfig({ ...all, maxIterations: 0 });
-    expect(yml).toContain('max_iterations: 0');
+    expect(yml).toContain('max_iterations: 1');
+    expect(yml).not.toContain('Set to 0');
   });
 
   it('generates GitHub Actions workflow with all enabled providers + npm ci', () => {

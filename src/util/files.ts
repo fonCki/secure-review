@@ -1,5 +1,6 @@
 import { readdir, readFile, stat, writeFile, mkdir } from 'node:fs/promises';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import type { Finding } from '../findings/schema.js';
 
 export interface FileContent {
   /** Absolute path. */
@@ -124,4 +125,24 @@ function numberLines(text: string): string {
 export async function writeFileSafe(path: string, content: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, content, 'utf8');
+}
+
+export function isPathInside(parent: string, child: string): boolean {
+  const rel = relative(resolve(parent), resolve(child));
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+export function normalizeScanPath(file: string, root: string): string {
+  const rootAbs = resolve(root);
+  const slashPath = file.trim().replace(/\\/g, '/');
+  const abs = isAbsolute(slashPath) ? slashPath : resolve(rootAbs, slashPath);
+  const rel = relative(rootAbs, abs) || basename(rootAbs);
+  return rel.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+export function normalizeFindingPaths(findings: Finding[], root: string): Finding[] {
+  return findings.map((f) => ({
+    ...f,
+    file: normalizeScanPath(f.file, root),
+  }));
 }

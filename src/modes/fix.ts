@@ -8,7 +8,7 @@ import { evaluateGates } from '../gates/evaluate.js';
 import { runReviewer, type ReviewerRunOutput } from '../roles/reviewer.js';
 import { runWriter, type WriterRunOutput } from '../roles/writer.js';
 import { runAllSast } from '../sast/index.js';
-import { readSourceTree } from '../util/files.js';
+import { normalizeFindingPaths, readSourceTree } from '../util/files.js';
 import { log } from '../util/logger.js';
 import { spinner } from '../util/spinner.js';
 
@@ -112,21 +112,24 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
   // Live progress bar across the parallel reviewer calls.
   let completedReviewers = 0;
   const initSpinner = spinner(`Initial scan: 0/${N} reader${N === 1 ? '' : 's'} done`);
-  const initialReviewerRuns = await Promise.all(
-    reviewerInstances.map(async (r) => {
-      const result = await runReviewer({
-        reviewer: r.ref,
-        adapter: r.adapter,
-        skill: r.skill,
-        files: initialFiles,
-        priorFindings: config.sast.inject_into_reviewer_context ? initialSast.findings : undefined,
-      });
-      completedReviewers += 1;
-      initSpinner.update(
-        `Initial scan: ${completedReviewers}/${N} reader${N === 1 ? '' : 's'} done (last: ${r.ref.name} → ${result.findings.length})`,
-      );
-      return result;
-    }),
+  const initialReviewerRuns = normalizeReviewerRuns(
+    await Promise.all(
+      reviewerInstances.map(async (r) => {
+        const result = await runReviewer({
+          reviewer: r.ref,
+          adapter: r.adapter,
+          skill: r.skill,
+          files: initialFiles,
+          priorFindings: config.sast.inject_into_reviewer_context ? initialSast.findings : undefined,
+        });
+        completedReviewers += 1;
+        initSpinner.update(
+          `Initial scan: ${completedReviewers}/${N} reader${N === 1 ? '' : 's'} done (last: ${r.ref.name} → ${result.findings.length})`,
+        );
+        return result;
+      }),
+    ),
+    root,
   );
   initSpinner.succeed(`Initial scan complete: ${N} reader${N === 1 ? '' : 's'}`);
   for (const r of initialReviewerRuns) {
@@ -156,10 +159,27 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
   let gateReasons: string[] = [];
   let consecutiveCleanIters = 0;
 
+  const initialGate = evaluateGates(
+    {
+      beforeFindings: [],
+      afterFindings: initialFindings,
+      cumulativeCostUSD: totalCost,
+      elapsedMs: Date.now() - start,
+      iteration: 0,
+    },
+    config.gates,
+  );
+  if (!initialGate.proceed) {
+    log.warn(`Gate triggered after initial scan: ${initialGate.reasons.join('; ')}`);
+    gateBlocked = true;
+    gateReasons = mergeGateReasons(gateReasons, initialGate.reasons);
+  }
+
   // 2) LOOP
-  for (let i = 0; i < config.fix.max_iterations; i += 1) {
-    const verifier = pickReviewer(reviewerInstances, i, config.fix.mode);
-    log.header(`Iteration ${i + 1} — verifier: ${verifier.ref.name}`);
+  if (!gateBlocked) {
+    for (let i = 0; i < config.fix.max_iterations; i += 1) {
+      const verifier = pickReviewer(reviewerInstances, i, config.fix.mode);
+      log.header(`Iteration ${i + 1} — verifier: ${verifier.ref.name}`);
 
     const findingsToFix = currentFindings;
     const beforeFiles = await readSourceTree(root);
@@ -191,13 +211,16 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
     const afterFiles = await readSourceTree(root);
     const sastAfterRun = await runAllSast(root, config.sast);
     const vSpinner = spinner(`Verifier ${verifier.ref.name} auditing post-fix code`);
-    const verifierRun = await runReviewer({
-      reviewer: verifier.ref,
-      adapter: verifier.adapter,
-      skill: verifier.skill,
-      files: afterFiles,
-      priorFindings: config.sast.inject_into_reviewer_context ? sastAfterRun.findings : undefined,
-    });
+    const verifierRun = normalizeReviewerRun(
+      await runReviewer({
+        reviewer: verifier.ref,
+        adapter: verifier.adapter,
+        skill: verifier.skill,
+        files: afterFiles,
+        priorFindings: config.sast.inject_into_reviewer_context ? sastAfterRun.findings : undefined,
+      }),
+      root,
+    );
     totalCost += verifierRun.usage.costUSD;
     vSpinner.succeed(
       `Verifier ${verifier.ref.name}: ${verifierRun.findings.length} finding${verifierRun.findings.length === 1 ? '' : 's'} ($${verifierRun.usage.costUSD.toFixed(3)})`,
@@ -239,7 +262,7 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
     if (!decision.proceed) {
       log.warn(`Gate triggered — stopping loop: ${decision.reasons.join('; ')}`);
       gateBlocked = true;
-      gateReasons = decision.reasons;
+      gateReasons = mergeGateReasons(gateReasons, decision.reasons);
       currentFindings = findingsAfter;
       break;
     }
@@ -259,11 +282,29 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
     } else {
       consecutiveCleanIters = 0;
     }
+    }
   }
 
   // 3) FINAL VERIFICATION (parallel, configurable)
   let verification: ReviewerRunOutput[] | undefined;
-  if (config.fix.final_verification !== 'none') {
+  if (!gateBlocked && config.fix.final_verification !== 'none') {
+    const preFinalGate = evaluateGates(
+      {
+        beforeFindings: currentFindings,
+        afterFindings: currentFindings,
+        cumulativeCostUSD: totalCost,
+        elapsedMs: Date.now() - start,
+        iteration: iterations.length,
+      },
+      config.gates,
+    );
+    if (!preFinalGate.proceed) {
+      log.warn(`Gate triggered before final verification: ${preFinalGate.reasons.join('; ')}`);
+      gateBlocked = true;
+      gateReasons = mergeGateReasons(gateReasons, preFinalGate.reasons);
+    }
+  }
+  if (!gateBlocked && config.fix.final_verification !== 'none') {
     log.header('Final verification');
     const finalFiles = await readSourceTree(root);
     const finalSast = await runAllSast(root, config.sast);
@@ -275,21 +316,24 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
     const finalSpinner = spinner(
       `Final verification: 0/${verifiers.length} reader${verifiers.length === 1 ? '' : 's'} done`,
     );
-    verification = await Promise.all(
-      verifiers.map(async (r) => {
-        const result = await runReviewer({
-          reviewer: r.ref,
-          adapter: r.adapter,
-          skill: r.skill,
-          files: finalFiles,
-          priorFindings: config.sast.inject_into_reviewer_context ? finalSast.findings : undefined,
-        });
-        completedFinal += 1;
-        finalSpinner.update(
-          `Final verification: ${completedFinal}/${verifiers.length} reader${verifiers.length === 1 ? '' : 's'} done (last: ${r.ref.name} → ${result.findings.length})`,
-        );
-        return result;
-      }),
+    verification = normalizeReviewerRuns(
+      await Promise.all(
+        verifiers.map(async (r) => {
+          const result = await runReviewer({
+            reviewer: r.ref,
+            adapter: r.adapter,
+            skill: r.skill,
+            files: finalFiles,
+            priorFindings: config.sast.inject_into_reviewer_context ? finalSast.findings : undefined,
+          });
+          completedFinal += 1;
+          finalSpinner.update(
+            `Final verification: ${completedFinal}/${verifiers.length} reader${verifiers.length === 1 ? '' : 's'} done (last: ${r.ref.name} → ${result.findings.length})`,
+          );
+          return result;
+        }),
+      ),
+      root,
     );
     finalSpinner.succeed(`Final verification complete: ${verifiers.length} reader${verifiers.length === 1 ? '' : 's'}`);
     for (const v of verification) totalCost += v.usage.costUSD;
@@ -298,6 +342,21 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
       ...finalSast.findings,
     ]);
     log.info(`Verification by ${verifiers.length} reviewer(s): ${combined.length} findings remaining`);
+    const postFinalGate = evaluateGates(
+      {
+        beforeFindings: currentFindings,
+        afterFindings: combined,
+        cumulativeCostUSD: totalCost,
+        elapsedMs: Date.now() - start,
+        iteration: iterations.length + 1,
+      },
+      config.gates,
+    );
+    if (!postFinalGate.proceed) {
+      log.warn(`Gate triggered after final verification: ${postFinalGate.reasons.join('; ')}`);
+      gateBlocked = true;
+      gateReasons = mergeGateReasons(gateReasons, postFinalGate.reasons);
+    }
     currentFindings = combined;
   }
 
@@ -332,6 +391,21 @@ function summarizeSast(s: Awaited<ReturnType<typeof runAllSast>>): {
     eslint: s.eslint.count,
     npmAudit: s.npmAudit.count,
   };
+}
+
+function normalizeReviewerRun(run: ReviewerRunOutput, root: string): ReviewerRunOutput {
+  return {
+    ...run,
+    findings: normalizeFindingPaths(run.findings, root),
+  };
+}
+
+function normalizeReviewerRuns(runs: ReviewerRunOutput[], root: string): ReviewerRunOutput[] {
+  return runs.map((r) => normalizeReviewerRun(r, root));
+}
+
+function mergeGateReasons(existing: string[], next: string[]): string[] {
+  return Array.from(new Set([...existing, ...next]));
 }
 
 function formatBreakdown(b: SeverityBreakdown): string {

@@ -10,7 +10,7 @@ inputs:
     required: false
     default: '.secure-review.yml'
   mode:
-    description: 'review | fix'
+    description: 'review | fix (fix is deprecated/no-op in the PR action entrypoint)'
     required: false
     default: 'review'
   max-cost-usd:

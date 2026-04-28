@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { extractJson, parseFindings } from '../src/findings/parse.js';
 
 describe('extractJson', () => {
@@ -54,6 +54,21 @@ describe('parseFindings', () => {
     ]);
     const out = parseFindings(raw, 'r1');
     expect(out).toHaveLength(1);
+  });
+
+  it('salvages valid findings when one item is malformed', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const raw = JSON.stringify({
+      findings: [
+        { severity: 'HIGH', file: 'a.ts', line: 3, title: 'valid', description: 'd' },
+        { severity: 'LOW', line: 4, title: 'missing file', description: 'd' },
+      ],
+    });
+    const out = parseFindings(raw, 'r1');
+    expect(out).toHaveLength(1);
+    expect(out[0].title).toBe('valid');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
 

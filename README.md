@@ -32,27 +32,28 @@ The design is grounded in recent LLM-security research showing that (1) SAST alo
 
 ```bash
 npm install --save-dev secure-review
-npx secure-review init        # interactive scaffold: .secure-review.yml + .env
-# edit .env — paste your API keys (or skip this step if you set --yes during init)
+npx secure-review init        # interactive scaffold: .secure-review.yml + .env or .env.example
+# if init created .env.example: cp .env.example .env
+# edit .env — paste your API keys
 npx secure-review review ./src
 ```
 
 `.env` in the current directory is auto-loaded — no `source .env` needed.
 
-`init` asks a few yes/no questions (which providers, enable SAST, enter keys now or later) and drops a working config + env file. Use `--yes` to skip the prompts and accept all defaults.
+`init` asks a few yes/no questions (which providers, enable SAST, enter keys now or later) and drops a working config + env file. Use `--yes` to skip the prompts and accept all defaults; that non-interactive path writes `.env.example`, so copy it to `.env` and fill in the keys before running an AI-backed mode.
 
 ### Other CLI subcommands
 
 | Command | Purpose |
 |---|---|
-| `secure-review init` | Scaffold `.secure-review.yml` + `.env` + (optional) `.github/workflows/secure-review.yml` |
+| `secure-review init` | Scaffold `.secure-review.yml` + `.env` or `.env.example` + optional GitHub Actions workflow |
 | `secure-review scan <path>` | SAST only — no AI calls, no API keys needed |
 | `secure-review review <path>` | Multi-model review, no file changes |
 | `secure-review fix <path>` | Iterative review → write → re-review loop |
 | `secure-review setup-secrets` | Push API keys from local `.env` to GitHub Action secrets via `gh` CLI |
 | `secure-review pr` | GitHub Action entry point (called by the workflow) |
 
-> **One key is enough.** You don't need keys for all three providers — secure-review runs with as few as **one reader**. Disable any provider during `init` (or remove its entry from `.secure-review.yml`) and the tool simply skips it. This is useful if you only have an OpenAI key, or want to keep cost down to a single provider.
+> **One key is enough.** You don't need keys for all three providers — secure-review runs with as few as **one reader**, as long as the writer also uses an enabled provider. Disable any provider during `init` (or remove its entry from `.secure-review.yml`) and the tool simply doesn't instantiate that provider. This is useful if you only have an OpenAI key, or want to keep cost down to a single provider.
 
 ## Quick start — GitHub Action
 
@@ -71,6 +72,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
       - uses: fonCki/secure-review@v1
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -79,7 +83,7 @@ jobs:
           GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
 ```
 
-Open a PR — a single review is posted with one line-anchored comment per finding.
+Open a PR — a single review is posted, with inline comments for findings that land on GitHub-commentable diff lines and summary text for changed-file findings outside those lines.
 
 ### Setting GitHub Action secrets
 
@@ -134,7 +138,7 @@ review:
   parallel: true
 
 fix:
-  mode: sequential_rotation             # reviewers[N % len] each iteration
+  mode: sequential_rotation             # verifier = reviewers[i % len] each iteration
   max_iterations: 3
   final_verification: all_reviewers
 
@@ -173,7 +177,7 @@ GITHUB_TOKEN=...
 secure-review scan ./src
 ```
 
-Runs Semgrep + ESLint + npm audit (parallel) and normalizes their output to the same `Finding` schema the AI readers use. No LLM calls, no API keys required. Cheapest pre-commit triage.
+Runs Semgrep, then ESLint, then npm audit, and normalizes their output to the same `Finding` schema the AI readers use. No LLM calls, no API keys required. Cheapest pre-commit triage.
 
 ### `review` — multi-model parallel one-shot
 
@@ -181,7 +185,7 @@ Runs Semgrep + ESLint + npm audit (parallel) and normalizes their output to the 
 secure-review review ./src
 ```
 
-Every reader (e.g. anthropic-haiku + openai-mini + gemini-flash) scans the **same code** in **parallel** + SAST runs alongside. Findings are deduped by `{file, line-bucket, CWE}` — overlapping findings merge, and `reportedBy` accumulates names. Confidence per finding is `min(1, |reportedBy| / 3)`, so a finding flagged by 2 of 3 readers is high-confidence.
+SAST runs first, then every reader (e.g. anthropic-haiku + openai-mini + gemini-flash) scans the **same code** with the SAST findings passed as prior context when enabled. Reviewers run in parallel by default; set `review.parallel: false` in `.secure-review.yml` to run them sequentially. Findings are deduped by `{file, line-bucket, CWE-or-title-prefix}` — overlapping findings merge, and `reportedBy` accumulates names. Confidence per finding is `min(1, |reportedBy| / 3)`, so a finding flagged by 2 of 3 reporters is high-confidence.
 
 No file mutations. Output: `reports/review-<timestamp>.{md,json}`.
 
@@ -193,13 +197,13 @@ secure-review fix ./src --max-iterations 3 --max-cost-usd 20
 
 The mode that actually fixes things. Three phases:
 
-1. **Initial union scan** — *all* readers run in parallel + SAST. The aggregated union becomes the writer's iter-1 to-do list (no reader's blind spots get a free pass).
+1. **Initial union scan** — SAST runs first, then *all* readers run in parallel. The aggregated union becomes the writer's iter-1 to-do list (no reader's blind spots get a free pass).
 2. **Iteration loop** (rotating verifier per iter):
    - Step A: Writer applies fixes for the current findings list (iter 1: union; iter 2+: previous verifier's audit).
    - Step B: Next reader in rotation audits the writer's output with fresh eyes (different model = different blind spots).
    - Step C: That audit becomes the next iteration's input.
    - The loop only exits when **N consecutive verifiers** all see clean (full rotation), or a gate fires (`block_on_new_critical`, `max_cost_usd`, `max_wall_time_minutes`).
-3. **Final verification** — all readers in parallel re-scan the final state. Catches anything the per-iteration verifiers missed individually.
+3. **Final verification** — by default, all readers in parallel re-scan the final state. Catches anything the per-iteration verifiers missed individually.
 
 The writer is **always the same model**; the verifier rotates. This prevents the writer from drifting toward "code that satisfies one specific model" — every iteration a different judge shows up.
 
@@ -209,7 +213,7 @@ Output: `reports/fix-<timestamp>.{md,json}` plus modified source files.
 
 ### `pr` — GitHub Action entrypoint
 
-Runs `review` mode on the PR diff and posts a single review with line-anchored inline comments. Findings are split into three buckets:
+Runs `review` mode on the full checkout, then filters the aggregated findings against the PR diff before posting a single review. Findings are split into three buckets:
 
 - **inline** — finding on a changed line in a changed file → posted as inline comment
 - **summary** — finding in a changed file but on an unchanged line → mentioned in the review summary
@@ -219,7 +223,7 @@ Fork PRs are skipped by default (forks don't have secret access). Fails the chec
 
 ## Architecture
 
-![secure-review architecture: layered stack of CLI, Modes, Roles, Adapters, SAST wrappers, Aggregator, Gates, Reporters](assets/architecture.png)
+![secure-review architecture: entrypoints flow through modes and core modules to reports and GitHub PR review](docs/images/architecture-overview.png)
 
 For the per-mode runtime flow (sequence diagrams, state diagrams, full pseudo-code), see [WORKFLOW.md](WORKFLOW.md).
 
@@ -231,8 +235,10 @@ Every run emits a self-contained JSON with per-iteration counts and severity bre
 {
   "task_id": "my-app",
   "tool": "secure-review",
-  "mode": "fix",
+  "condition": "F-fix",
   "run": 1,
+  "timestamp": "2026-04-28T12:00:00.000Z",
+  "model_version": "claude-sonnet-4-6|gpt-5-codex+claude-sonnet-4-6+gemini-2.5-pro",
   "total_findings_initial": 12,
   "findings_by_severity_initial": { "CRITICAL": 1, "HIGH": 3, "MEDIUM": 5, "LOW": 2, "INFO": 1 },
   "total_findings_after_fix": 4,
@@ -240,11 +246,16 @@ Every run emits a self-contained JSON with per-iteration counts and severity bre
   "new_findings_introduced": 1,
   "findings_resolved": 9,
   "resolution_rate_pct": 75.0,
+  "semgrep_after_fix": 0,
+  "eslint_after_fix": 0,
+  "lines_of_code_fixed": 0,
+  "reviewers": ["codex-web-sec", "sonnet-owasp", "gemini-dependencies"],
+  "iterations": 3,
   "per_iteration": [...]
 }
 ```
 
-The same JSON is produced by both `review` and `fix` modes — a single schema for the whole tool.
+The same schema is used by both `review` and `fix` modes. Review-only runs use `condition: "F-review"` and set the before/after finding counts to the same values because no fixes are applied.
 
 ## Developing
 

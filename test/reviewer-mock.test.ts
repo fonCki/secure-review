@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { CompleteInput, CompleteOutput, ModelAdapter } from '../src/adapters/types.js';
 import { runReviewer } from '../src/roles/reviewer.js';
 import type { FileContent } from '../src/util/files.js';
@@ -76,5 +76,46 @@ describe('runReviewer integration (with mock adapter)', () => {
     });
     expect(out.error).toBeDefined();
     expect(out.findings).toEqual([]);
+  });
+
+  it('keeps valid findings when one model finding is malformed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const adapter = new MockAdapter(
+      JSON.stringify({
+        findings: [
+          {
+            severity: 'HIGH',
+            file: 'auth.ts',
+            line_start: 1,
+            line_end: 2,
+            title: 'Valid finding',
+            description: 'This one should survive.',
+          },
+          {
+            severity: 'LOW',
+            line_start: 3,
+            title: 'Missing file',
+            description: 'This one should be skipped.',
+          },
+        ],
+      }),
+    );
+    const out = await runReviewer({
+      reviewer: {
+        name: 'mock-salvage',
+        provider: 'openai',
+        model: 'mock',
+        skill: '/tmp/skill',
+      },
+      adapter,
+      skill: '# Skill',
+      files: [VULN_FILE],
+    });
+
+    expect(out.error).toBeUndefined();
+    expect(out.findings).toHaveLength(1);
+    expect(out.findings[0].title).toBe('Valid finding');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

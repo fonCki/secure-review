@@ -11,22 +11,18 @@ export declare const ModelRef: z.ZodObject<{
     name: z.ZodOptional<z.ZodString>;
     /** Optional cap per single invocation (tokens). */
     maxTokens: z.ZodOptional<z.ZodNumber>;
-    /** Optional scope filter (glob patterns). Reviewer only looks at matching files. */
-    scope: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
 }, "strip", z.ZodTypeAny, {
     provider: "anthropic" | "openai" | "google";
     model: string;
     skill: string;
     name?: string | undefined;
     maxTokens?: number | undefined;
-    scope?: string[] | undefined;
 }, {
     provider: "anthropic" | "openai" | "google";
     model: string;
     skill: string;
     name?: string | undefined;
     maxTokens?: number | undefined;
-    scope?: string[] | undefined;
 }>;
 export type ModelRef = z.infer<typeof ModelRef>;
 export declare const ReviewerRef: z.ZodObject<{
@@ -34,7 +30,6 @@ export declare const ReviewerRef: z.ZodObject<{
     model: z.ZodString;
     skill: z.ZodString;
     maxTokens: z.ZodOptional<z.ZodNumber>;
-    scope: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
 } & {
     name: z.ZodString;
 }, "strip", z.ZodTypeAny, {
@@ -43,14 +38,12 @@ export declare const ReviewerRef: z.ZodObject<{
     skill: string;
     name: string;
     maxTokens?: number | undefined;
-    scope?: string[] | undefined;
 }, {
     provider: "anthropic" | "openai" | "google";
     model: string;
     skill: string;
     name: string;
     maxTokens?: number | undefined;
-    scope?: string[] | undefined;
 }>;
 export type ReviewerRef = z.infer<typeof ReviewerRef>;
 export declare const SastConfig: z.ZodObject<{
@@ -124,29 +117,24 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         name: z.ZodOptional<z.ZodString>;
         /** Optional cap per single invocation (tokens). */
         maxTokens: z.ZodOptional<z.ZodNumber>;
-        /** Optional scope filter (glob patterns). Reviewer only looks at matching files. */
-        scope: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
     }, "strip", z.ZodTypeAny, {
         provider: "anthropic" | "openai" | "google";
         model: string;
         skill: string;
         name?: string | undefined;
         maxTokens?: number | undefined;
-        scope?: string[] | undefined;
     }, {
         provider: "anthropic" | "openai" | "google";
         model: string;
         skill: string;
         name?: string | undefined;
         maxTokens?: number | undefined;
-        scope?: string[] | undefined;
     }>;
     reviewers: z.ZodArray<z.ZodObject<{
         provider: z.ZodEnum<["anthropic", "openai", "google"]>;
         model: z.ZodString;
         skill: z.ZodString;
         maxTokens: z.ZodOptional<z.ZodNumber>;
-        scope: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
     } & {
         name: z.ZodString;
     }, "strip", z.ZodTypeAny, {
@@ -155,14 +143,12 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         skill: string;
         name: string;
         maxTokens?: number | undefined;
-        scope?: string[] | undefined;
     }, {
         provider: "anthropic" | "openai" | "google";
         model: string;
         skill: string;
         name: string;
         maxTokens?: number | undefined;
-        scope?: string[] | undefined;
     }>, "many">;
     sast: z.ZodDefault<z.ZodObject<{
         enabled: z.ZodDefault<z.ZodBoolean>;
@@ -227,21 +213,12 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         diff?: string | undefined;
     }>>;
 }, "strip", z.ZodTypeAny, {
-    review: {
-        parallel: boolean;
-    };
-    fix: {
-        mode: "sequential_rotation" | "parallel_aggregate";
-        max_iterations: number;
-        final_verification: "all_reviewers" | "first_reviewer" | "none";
-    };
     writer: {
         provider: "anthropic" | "openai" | "google";
         model: string;
         skill: string;
         name?: string | undefined;
         maxTokens?: number | undefined;
-        scope?: string[] | undefined;
     };
     reviewers: {
         provider: "anthropic" | "openai" | "google";
@@ -249,12 +226,19 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         skill: string;
         name: string;
         maxTokens?: number | undefined;
-        scope?: string[] | undefined;
     }[];
     sast: {
         enabled: boolean;
         tools: ("semgrep" | "eslint" | "npm_audit")[];
         inject_into_reviewer_context: boolean;
+    };
+    review: {
+        parallel: boolean;
+    };
+    fix: {
+        mode: "sequential_rotation" | "parallel_aggregate";
+        max_iterations: number;
+        final_verification: "all_reviewers" | "first_reviewer" | "none";
     };
     gates: {
         block_on_new_critical: boolean;
@@ -274,7 +258,6 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         skill: string;
         name?: string | undefined;
         maxTokens?: number | undefined;
-        scope?: string[] | undefined;
     };
     reviewers: {
         provider: "anthropic" | "openai" | "google";
@@ -282,8 +265,12 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         skill: string;
         name: string;
         maxTokens?: number | undefined;
-        scope?: string[] | undefined;
     }[];
+    sast?: {
+        enabled?: boolean | undefined;
+        tools?: ("semgrep" | "eslint" | "npm_audit")[] | undefined;
+        inject_into_reviewer_context?: boolean | undefined;
+    } | undefined;
     review?: {
         parallel?: boolean | undefined;
     } | undefined;
@@ -291,11 +278,6 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         mode?: "sequential_rotation" | "parallel_aggregate" | undefined;
         max_iterations?: number | undefined;
         final_verification?: "all_reviewers" | "first_reviewer" | "none" | undefined;
-    } | undefined;
-    sast?: {
-        enabled?: boolean | undefined;
-        tools?: ("semgrep" | "eslint" | "npm_audit")[] | undefined;
-        inject_into_reviewer_context?: boolean | undefined;
     } | undefined;
     gates?: {
         block_on_new_critical?: boolean | undefined;

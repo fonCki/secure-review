@@ -21,23 +21,16 @@ A "reader" and a "writer" can be the **same model** with different system prompt
 
 The simplest mode. No LLM calls, no API keys required.
 
-```mermaid
-flowchart LR
-    src[Source tree] --> sg[semgrep]
-    sg --> es[eslint]
-    es --> np[npm audit]
-    np --> norm[Normalize to Finding schema]
-    norm --> out[Print JSON to stdout]
-```
+![scan mode: secure-review scan runs runAllSast through semgrep, eslint, npm audit, then prints a JSON summary](docs/images/scan-mode.png)
 
 <details><summary>Pseudo-code</summary>
 
 ```
-1. Read source tree
+1. Load `.secure-review.yml` and pass the requested path to `runAllSast`
 2. Run each enabled SAST tool sequentially (in src/sast/index.ts order):
      - semgrep (auto config)
-     - eslint  (uses your project's config; tool exits early if no eslint.config.js)
-     - npm audit (only if package.json exists)
+     - eslint  (via `npx --no-install eslint --format json <path>`)
+     - npm audit (with the requested path as cwd)
 3. Normalize each tool's output to the unified Finding schema
 4. Print summary as JSON to stdout; no report file written
 ```
@@ -51,37 +44,18 @@ Use it when you want a fast, free, AI-free triage.
 
 ## `review` mode — multi-model parallel one-shot
 
-Every reader scans the same code at the same time. Findings are merged by `{file, line-bucket, CWE}`. Confidence per finding is `min(1, |reportedBy| / 3)` so a finding flagged by 2 of 3 readers is high-confidence.
+SAST runs first, then every reader scans the same code. Findings are merged by `{file, line-bucket, CWE-or-title-prefix}`. Confidence per finding is `min(1, |reportedBy| / 3)` so a finding flagged by 2 of 3 reporters is high-confidence.
 
-```mermaid
-flowchart TD
-    src[Source tree] --> sast[SAST tools<br/>sequential: semgrep → eslint → npm-audit]
-    sast -.prior context.-> RA & RB & RC
-    src --> RA[Reader A<br/>e.g. anthropic-haiku<br/>OWASP skill]
-    src --> RB[Reader B<br/>e.g. openai-mini<br/>web-sec skill]
-    src --> RC[Reader C<br/>e.g. gemini-flash<br/>dependency skill]
-    RA --> agg[aggregate<br/>group by file, line//10, CWE<br/>confidence = min 1, reporters/3]
-    RB --> agg
-    RC --> agg
-    sast --> agg
-    agg --> md[reports/review-T.md]
-    agg --> json[reports/review-T.json]
-
-    classDef reader fill:#e1f5fe,stroke:#01579b
-    classDef sast fill:#fff3e0,stroke:#e65100
-    classDef out fill:#e8f5e9,stroke:#1b5e20
-    class RA,RB,RC reader
-    class sast sast
-    class md,json out
-```
+![review mode: readSourceTree and runAllSast feed reviewer calls, aggregate, and review reports](docs/images/review-mode.png)
 
 <details><summary>Pseudo-code</summary>
 
 ```
 1. Read source tree
 2. Run all SAST tools (sequential — semgrep, then eslint, then npm-audit)
-3. Run readers — parallel if config.review.parallel == true (default), otherwise
-   sequential. Each reader receives:
+3. Start reviewer calls. If config.review.parallel == true (default), readers
+   run in parallel via Promise.all; if false, they run one at a time in the
+   configured order. Each reader receives:
                     - the code
                     - the SAST findings as prior context (if config.sast.inject_into_reviewer_context)
                     - its own role-specific skill prompt
@@ -90,7 +64,7 @@ flowchart TD
                          reader_B.findings,
                          reader_C.findings,
                          SAST.findings)
-     deduped     = group by {file, line-bucket, CWE}
+     deduped     = group by {file, line-bucket, CWE-or-title-prefix}
                    merge overlaps; reportedBy = union of names
                    confidence = min(1, |reportedBy| / 3)
 5. Write report (markdown + JSON evidence)
@@ -111,55 +85,16 @@ The mode that does the actual work of fixing security issues. It uses **rotation
 
 ### High-level: all three phases at a glance
 
-```mermaid
-flowchart TD
-    start([secure-review fix ./src]) --> P1
-    subgraph P1[Phase 1 — Initial union scan]
-      sast1[SAST tools<br/>sequential] --> par1
-      par1[Readers in parallel] --> agg1[Aggregate → currentFindings]
-    end
-    P1 --> loop{i lt max_iterations?}
-    subgraph P2[Phase 2 — Iteration loop]
-      loop -- yes --> writer[Writer fixes currentFindings]
-      writer --> verifier[Verifier readers i mod N<br/>audits post-fix code]
-      verifier --> gate{Any gate fired?<br/>new CRITICAL · cost · time}
-      gate -- yes --> exit1([break])
-      gate -- no --> updateC[currentFindings = audit result]
-      updateC --> clean{Clean iters greater equal N?}
-      clean -- yes --> exit2([break — full rotation clean])
-      clean -- no --> incI[i plus equal 1] --> loop
-    end
-    loop -- no --> P3
-    subgraph P3[Phase 3 — Final verification]
-      finalpar[All readers in parallel] --> finalagg[Aggregate → finalFindings]
-    end
-    exit1 --> P3
-    exit2 --> P3
-    P3 --> done([reports/fix-T.md and .json])
-
-    classDef phase fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    classDef terminal fill:#e8f5e9,stroke:#1b5e20
-    classDef gate fill:#fce4ec,stroke:#880e4f
-    class start,done terminal
-    class loop,gate,clean gate
-```
+![fix mode loop: initial union scan, iteration loop with writer/verifier/gates, and final verification](docs/images/fix-mode-loop.png)
 
 ### Phase 1: Initial union scan
 
-```mermaid
-flowchart LR
-    src[Source tree] --> sast[SAST<br/>sequential]
-    src --> RA[Reader A]
-    src --> RB[Reader B]
-    src --> RC[Reader C]
-    RA & RB & RC & sast --> agg[aggregate]
-    agg --> cur[(currentFindings<br/>= writer's iter-1 to-do)]
-```
+![initial union scan: source tree feeds SAST and parallel readers, then aggregate produces currentFindings](docs/images/initial-union-scan.png)
 
 <details><summary>Pseudo-code</summary>
 
 ```
-SAST(files)                          # sequential SAST tools
+SAST(root)                           # sequential SAST tools
 initialFindings = aggregate(
     reader_A.review(files) +         # readers run in PARALLEL (Promise.all)
     reader_B.review(files) +
@@ -173,53 +108,17 @@ currentFindings = initialFindings    # ← becomes the writer's iter-1 to-do lis
 
 > SAST runs sequentially before the parallel reader fan-out. Readers always run in parallel in `fix` mode (no opt-out), so the `config.review.parallel` flag has no effect here.
 
+> Gates are also evaluated **once after the initial scan** (before entering the loop) and **once after final verification** — not only inside the iteration loop. So a cost/wall-time/critical-introduced violation can short-circuit fix mode at any of three points: post-initial-scan, mid-loop, or post-final-verification.
+
 ### Phase 2: Iteration loop
 
 #### One iteration in time
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Cur as currentFindings
-    participant Files as Source files
-    participant SAST as SAST tools
-    participant W as Writer (fixed model)
-    participant V as Verifier (rotating)
-    participant Gate as Gates
-
-    Note over Cur,Gate: One iteration i — verifier = readers[i mod N]
-
-    Cur->>Files: snapshot beforeFiles (re-read tree)
-    Files->>SAST: pre-writer scan → sastBefore
-    Cur->>W: hand over to-do list
-    W->>Files: write modified files (sanitized — NUL/control chars stripped)
-    Files->>SAST: post-writer re-scan → sastAfter
-    Files->>V: audit post-fix code
-    SAST-->>V: sastAfter as prior context (when inject_into_reviewer_context)
-    V-->>Cur: aggregate(verifier + sastAfter) → new currentFindings
-    V->>Gate: check new CRITICAL / cost / wall-time
-    Gate-->>Cur: proceed or break
-```
+![one fix iteration: currentFindings, source read, SAST before, writer, SAST after, rotating verifier, aggregate and gates](docs/images/fix-iteration.png)
 
 #### Rotation across iterations (sequential_rotation, N=3)
 
-```mermaid
-stateDiagram-v2
-    direction LR
-    [*] --> iter1
-    iter1: iter 1<br/>verifier = A
-    iter2: iter 2<br/>verifier = B
-    iter3: iter 3<br/>verifier = C
-    iter4: iter 4<br/>verifier = A (wraps)
-    iter5: iter 5<br/>verifier = B
-    iter1 --> iter2 : continue
-    iter2 --> iter3 : continue
-    iter3 --> iter4 : continue (max_iter > N)
-    iter4 --> iter5 : continue
-    iter1 --> [*] : gate / clean rotation
-    iter2 --> [*] : gate / clean rotation
-    iter3 --> [*] : gate / clean rotation
-```
+![reviewer rotation: sequential_rotation verifies with Reader A, Reader B, Reader C, then wraps](docs/images/reviewer-rotation.png)
 
 The writer is always the same model (configured in `writer:`). Only the verifier rotates. With `max_iterations >= N`, every reader audits at least once — guaranteeing cross-model coverage.
 
@@ -238,7 +137,7 @@ for i in 0 .. (max_iterations - 1):
     # Step A: Writer applies fixes (writer is fixed; same model every iteration)
     if currentFindings.length > 0:
         writerRun = writer.fix(currentFindings)   # writes files with sanitization
-                                                  # (NUL/control chars stripped)
+                                                  # (NUL replaced; other controls stripped)
     # else: skip writer call; verifier still runs to confirm clean state
 
     # Step B: Verifier audits (rotating reader = fresh eyes)
@@ -276,9 +175,10 @@ for i in 0 .. (max_iterations - 1):
 ```
 if config.fix.final_verification == 'all_reviewers':
     finalScan = parallel(reader.review(finalFiles) for reader in readers)
-    finalFindings = aggregate(finalScan + SAST(finalFiles))
-elif config.fix.final_verification == 'first_only':
-    finalFindings = readers[0].review(finalFiles) + SAST(finalFiles)
+    finalFindings = aggregate(finalScan + SAST(root))
+elif config.fix.final_verification == 'first_reviewer':
+    finalScan = [readers[0].review(finalFiles)]
+    finalFindings = aggregate(finalScan + SAST(root))
 # else 'none': skip
 ```
 
@@ -294,7 +194,7 @@ The final verification catches what individual iteration verifiers might have mi
 | `max_iter == N` (3 vs 3, default) | A, B, C | every reader audits exactly once; clean 1:1 mapping |
 | `max_iter > N` (e.g. 9 vs 3) | A, B, C, A, B, C, A, B, C | rotation wraps; early-exit can fire mid-loop after a full clean cycle |
 
-Recommendation: keep `max_iterations >= N` so the early-exit is structurally reachable. `max_iterations: 0` is a valid choice — it skips the loop entirely (just initial scan + final verification), useful for "audit-only" runs without any writer mutations.
+Recommendation: keep `max_iterations >= N` so the early-exit is structurally reachable. In `.secure-review.yml`, the schema currently accepts `max_iterations` from 1 to 10. The CLI override `--max-iterations 0` is applied after config loading and skips the loop entirely (initial scan + final verification), but `max_iterations: 0` in the config file is rejected in 0.5.10.
 
 ### Why this design
 
@@ -309,29 +209,9 @@ Together these prevent the failure mode that motivated the 0.5.0 redesign: a sin
 
 ## `pr` mode — GitHub Action entrypoint
 
-Runs `review` mode on the PR diff and posts a single review with line-anchored comments.
+Runs `review` mode on the full checkout, then filters the aggregated findings against the PR diff before posting a single review with line-anchored comments where GitHub permits them.
 
-```mermaid
-flowchart TD
-    pr[PR opened/updated] --> fork{Fork PR?}
-    fork -- yes --> skip([skip — no secrets])
-    fork -- no --> diff[Parse PR patch<br/>commentable lines per file]
-    diff --> review[Run review mode]
-    review --> bucket{Per finding}
-    bucket -->|on commentable line<br/>in changed file| inline[Inline comment]
-    bucket -->|in changed file<br/>but unchanged line| summary[Review summary]
-    bucket -->|in untouched file| dropped[Dropped]
-    inline --> post[postPrReview → one PR review]
-    summary --> post
-    post --> chk{block_on_new_critical<br/>and CRITICAL on diff?}
-    chk -- yes --> fail([exit 2 — check fails])
-    chk -- no --> pass([exit 0 — check passes])
-
-    classDef terminal fill:#e8f5e9,stroke:#1b5e20
-    classDef bad fill:#ffebee,stroke:#b71c1c
-    class pass,skip terminal
-    class fail bad
-```
+![pr mode: fork guard, diff commentable-line map, full-checkout review, PR review buckets, and exit status](docs/images/pr-mode.png)
 
 <details><summary>Pseudo-code</summary>
 
@@ -339,7 +219,7 @@ flowchart TD
 1. Verify PR context: GITHUB_EVENT_PATH, owner/repo/pr_number
 2. Skip if PR is from a fork (no secret access)
 3. Fetch PR file list, parse diffs into commentable line numbers per file
-4. Run review mode (full multi-reader scan + SAST)
+4. Run review mode on the full checkout (full multi-reader scan + SAST)
 5. Hand all findings + the per-file commentable-line map to `postPrReview()`
    (defined in src/reporters/github-pr.ts). Inside, findings are split into 3 buckets:
      - inline:        in a changed file AND on a commentable line → posted as inline review comment
@@ -358,13 +238,13 @@ Fork PR safety: forks don't have access to repo secrets, so reviewers would fail
 
 ## SAST integration
 
-SAST runs alongside readers and feeds them context (configurable via `inject_into_reviewer_context`).
+SAST runs before readers and feeds them context (configurable via `inject_into_reviewer_context`).
 
 ```
 SAST tools currently wrapped:
   - semgrep   (auto config; rules from semgrep registry)
-  - eslint    (your project's config; tool exits early if no eslint.config.js)
-  - npm audit (only if package.json exists)
+  - eslint    (via local `npx --no-install eslint`; skipped if unavailable or not runnable)
+  - npm audit (runs `npm audit --json` with the scan path as cwd)
 ```
 
 Each tool's output is normalized to the same `Finding` schema as AI readers, so they all participate in the same dedup + confidence calculation. A finding caught by both semgrep and gemini-flash gets `confidence = min(1, 2/3) = 0.67`.
@@ -380,12 +260,12 @@ Used by both `review` mode (one-shot) and `fix` mode (each verification step).
 ```
 function aggregate(rawFindings):
     grouped = group rawFindings by key:
-                  key = {file, floor(line / 10), cwe ?? title-prefix}
+                  key = {file, floor(lineStart / 10), cwe ?? title-prefix}
     # cwe defaults to a 24-char lowercased title prefix when absent — so
     # findings missing a CWE can still merge if their titles agree.
     for each group:
         merged.id          = synthesized "F-NN" (assigned in iteration order)
-        merged.title       = longest title (most descriptive)
+        merged.title       = first title that created the bucket
         merged.description = longest description
         merged.severity    = highest severity in group
         merged.reportedBy  = union of all names in group
@@ -393,7 +273,7 @@ function aggregate(rawFindings):
     return merged_findings  # insertion-ordered; callers sort if they want order
 ```
 
-The `floor(line / 10)` line-bucket is intentionally fuzzy — different reviewers often point at slightly different lines for the same bug ("line 24 in Anthropic's view" vs "line 26 in OpenAI's view"). Bucketing by 10-line windows merges these into one finding.
+The `floor(lineStart / 10)` line-bucket is intentionally fuzzy — different reviewers often point at slightly different lines for the same bug ("line 24 in Anthropic's view" vs "line 26 in OpenAI's view"). Bucketing by 10-line windows merges these into one finding.
 
 ---
 

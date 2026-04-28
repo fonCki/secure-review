@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 // Auto-load .env from CWD if present. Saves users from
@@ -23,6 +25,49 @@ import { renderReviewEvidence, renderFixEvidence } from './reporters/json.js';
 import { postPrReview } from './reporters/github-pr.js';
 import { writeFileSafe } from './util/files.js';
 import { log, setQuiet, setVerbose } from './util/logger.js';
+
+const execFileAsync = promisify(execFile);
+
+const DEFAULT_OUTPUT = {
+  report: './reports/report-{timestamp}.md',
+  findings: './reports/findings-{timestamp}.json',
+  diff: './reports/diff-{timestamp}.patch',
+} as const;
+
+function timestamp(): string {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+function outputPath(
+  configured: string,
+  defaultConfigured: string,
+  outputDir: string,
+  fallbackName: string,
+  stamp: string,
+): string {
+  const path = configured === defaultConfigured ? resolve(outputDir, fallbackName) : configured;
+  return resolve(path.replaceAll('{timestamp}', stamp));
+}
+
+function applyMaxCostOverride(config: Awaited<ReturnType<typeof loadConfig>>['config'], value?: string): void {
+  if (!value) return;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`Invalid max cost: ${value}`);
+  config.gates.max_cost_usd = parsed;
+}
+
+async function readGitDiff(root: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', root, 'diff', '--no-ext-diff', '--binary', '--'], {
+      maxBuffer: 50 * 1024 * 1024,
+    });
+    return stdout;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn(`Could not capture git diff: ${message}`);
+    return '';
+  }
+}
 
 async function readPackageVersion(): Promise<string> {
   // Read OUR package.json next to dist/, NOT the user's CWD package.json.
@@ -86,9 +131,21 @@ async function main(): Promise<void> {
         const env = loadEnv();
         const output = await runReviewMode({ root: resolve(path), config, configDir, env });
 
-        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const mdPath = resolve(opts.outputDir, `review-${stamp}.md`);
-        const jsonPath = resolve(opts.outputDir, `review-${stamp}.json`);
+        const stamp = timestamp();
+        const mdPath = outputPath(
+          config.output.report,
+          DEFAULT_OUTPUT.report,
+          opts.outputDir,
+          `review-${stamp}.md`,
+          stamp,
+        );
+        const jsonPath = outputPath(
+          config.output.findings,
+          DEFAULT_OUTPUT.findings,
+          opts.outputDir,
+          `review-${stamp}.json`,
+          stamp,
+        );
         await writeFileSafe(mdPath, renderReviewReport(output));
         const evidence = renderReviewEvidence(output, {
           taskId: opts.taskId,
@@ -126,12 +183,31 @@ async function main(): Promise<void> {
           const { config, configDir } = await loadConfig(opts.config);
           const env = loadEnv();
           if (opts.maxIterations) config.fix.max_iterations = Number(opts.maxIterations);
-          if (opts.maxCostUsd) config.gates.max_cost_usd = Number(opts.maxCostUsd);
+          applyMaxCostOverride(config, opts.maxCostUsd);
           const output = await runFixMode({ root: resolve(path), config, configDir, env });
 
-          const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-          const mdPath = resolve(opts.outputDir, `fix-${stamp}.md`);
-          const jsonPath = resolve(opts.outputDir, `fix-${stamp}.json`);
+          const stamp = timestamp();
+          const mdPath = outputPath(
+            config.output.report,
+            DEFAULT_OUTPUT.report,
+            opts.outputDir,
+            `fix-${stamp}.md`,
+            stamp,
+          );
+          const jsonPath = outputPath(
+            config.output.findings,
+            DEFAULT_OUTPUT.findings,
+            opts.outputDir,
+            `fix-${stamp}.json`,
+            stamp,
+          );
+          const diffPath = outputPath(
+            config.output.diff,
+            DEFAULT_OUTPUT.diff,
+            opts.outputDir,
+            `fix-${stamp}.patch`,
+            stamp,
+          );
           await writeFileSafe(mdPath, renderFixReport(output));
           const evidence = renderFixEvidence(output, {
             taskId: opts.taskId,
@@ -140,9 +216,11 @@ async function main(): Promise<void> {
             reviewerNames: config.reviewers.map((r) => r.name),
           });
           await writeFileSafe(jsonPath, JSON.stringify(evidence, null, 2));
+          await writeFileSafe(diffPath, await readGitDiff(resolve(path)));
 
           log.success(`Report:    ${mdPath}`);
           log.success(`Findings:  ${jsonPath}`);
+          log.success(`Diff:      ${diffPath}`);
           log.info(
             `Initial: ${output.initialFindings.length}  Final: ${output.finalFindings.length}  Resolved: ${evidence.findings_resolved} (${evidence.resolution_rate_pct}%)  Introduced: ${evidence.new_findings_introduced}  Cost: $${output.totalCostUSD.toFixed(3)}`,
           );
@@ -158,11 +236,16 @@ async function main(): Promise<void> {
     .command('pr')
     .description('GitHub Action entrypoint — review PR and post line-anchored comments.')
     .option('-c, --config <file>', 'config file', '.secure-review.yml')
-    .option('--autofix', 'apply fixes and commit to a PR branch', false)
-    .action(async (opts: { config: string; autofix: boolean }) => {
+    .option('--autofix', 'deprecated no-op; PR entrypoint always runs review mode', false)
+    .option('--max-cost-usd <n>', 'override cost cap')
+    .action(async (opts: { config: string; autofix: boolean; maxCostUsd?: string }) => {
       try {
         const { config, configDir } = await loadConfig(opts.config);
         const env = loadEnv();
+        applyMaxCostOverride(config, opts.maxCostUsd);
+        if (opts.autofix) {
+          log.warn('PR autofix mode is deprecated and currently a no-op; running review mode.');
+        }
 
         const eventPath = process.env.GITHUB_EVENT_PATH;
         if (!eventPath) throw new Error('GITHUB_EVENT_PATH not set — `pr` subcommand requires GitHub Actions context');
@@ -191,14 +274,14 @@ async function main(): Promise<void> {
 
         const { Octokit } = await import('@octokit/rest');
         const octokit = new Octokit({ auth: token });
-        const filesResp = await octokit.pulls.listFiles({
+        const { listPullRequestFiles } = await import('./util/github-pr-files.js');
+        const prFiles = await listPullRequestFiles(octokit, {
           owner,
           repo,
           pull_number: pr.number,
-          per_page: 300,
         });
         const { commentableLinesByFile } = await import('./util/diff.js');
-        const commentableLines = commentableLinesByFile(filesResp.data);
+        const commentableLines = commentableLinesByFile(prFiles);
         const totalCommentable = Array.from(commentableLines.values()).reduce(
           (n, s) => n + s.size,
           0,
@@ -288,6 +371,8 @@ async function main(): Promise<void> {
     if (mode === 'fix') argv.push('--autofix');
     const configInput = process.env.INPUT_CONFIG;
     if (configInput) argv.push('--config', configInput);
+    const maxCostInput = process.env.INPUT_MAX_COST_USD;
+    if (maxCostInput) argv.push('--max-cost-usd', maxCostInput);
   }
 
   await program.parseAsync(argv);

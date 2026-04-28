@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { jsonrepair } from 'jsonrepair';
 import { FindingSchema, type Finding, type Severity } from './schema.js';
+import { log } from '../util/logger.js';
 
 /**
  * Extract JSON from a model response. Models often wrap JSON in prose or
@@ -92,9 +93,9 @@ const RawFindingSchema = z.object({
 
 const ReviewPayloadSchema = z
   .object({
-    findings: z.array(RawFindingSchema),
+    findings: z.array(z.unknown()),
   })
-  .or(z.array(RawFindingSchema));
+  .or(z.array(z.unknown()));
 
 function normalizeSeverity(s: string): Severity {
   const up = s.trim().toUpperCase();
@@ -111,10 +112,18 @@ export function parseFindings(text: string, reviewerName: string): Finding[] {
   const parsed = ReviewPayloadSchema.parse(json);
   const raw = Array.isArray(parsed) ? parsed : parsed.findings;
 
-  return raw.map((r, idx): Finding => {
+  const findings: Finding[] = [];
+  let skipped = 0;
+  for (const [idx, item] of raw.entries()) {
+    const rawResult = RawFindingSchema.safeParse(item);
+    if (!rawResult.success) {
+      skipped += 1;
+      continue;
+    }
+    const r = rawResult.data;
     const lineStart = r.lineStart ?? r.line_start ?? r.line ?? 0;
     const lineEnd = r.lineEnd ?? r.line_end ?? lineStart;
-    const finding = FindingSchema.parse({
+    const findingResult = FindingSchema.safeParse({
       id: r.id ?? `F-${String(idx + 1).padStart(2, '0')}`,
       severity: r.severity,
       cwe: r.cwe,
@@ -128,6 +137,14 @@ export function parseFindings(text: string, reviewerName: string): Finding[] {
       reportedBy: [reviewerName],
       confidence: 0.5,
     });
-    return finding;
-  });
+    if (!findingResult.success) {
+      skipped += 1;
+      continue;
+    }
+    findings.push(findingResult.data);
+  }
+  if (skipped > 0) {
+    log.warn(`Reviewer ${reviewerName}: skipped ${skipped} malformed finding item(s)`);
+  }
+  return findings;
 }

@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { aggregate, severityBreakdown } from '../src/findings/aggregate.js';
 import { diffFindings } from '../src/findings/diff.js';
 import type { Finding } from '../src/findings/schema.js';
+import { normalizeFindingPaths } from '../src/util/files.js';
 
 function mkFinding(overrides: Partial<Finding> = {}): Finding {
   return {
@@ -47,6 +51,22 @@ describe('aggregate', () => {
       mkFinding({ id: 'F-17', file: 'b' }),
     ]);
     expect(out.map((f) => f.id)).toEqual(['F-01', 'F-02']);
+  });
+
+  it('merges findings after scan-root-relative path normalization', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sr-path-normalize-'));
+    const out = aggregate(
+      normalizeFindingPaths(
+        [
+          mkFinding({ file: join(root, 'src/a.ts'), cwe: 'CWE-306', reportedBy: ['eslint'] }),
+          mkFinding({ file: './src/a.ts', cwe: 'CWE-306', reportedBy: ['ai'] }),
+        ],
+        root,
+      ),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].file).toBe('src/a.ts');
+    expect(out[0].reportedBy.sort()).toEqual(['ai', 'eslint']);
   });
 });
 

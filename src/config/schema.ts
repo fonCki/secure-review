@@ -14,8 +14,6 @@ export const ModelRef = z.object({
   name: z.string().optional(),
   /** Optional cap per single invocation (tokens). */
   maxTokens: z.number().int().positive().optional(),
-  /** Optional scope filter (glob patterns). Reviewer only looks at matching files. */
-  scope: z.array(z.string()).optional(),
 });
 export type ModelRef = z.infer<typeof ModelRef>;
 
