@@ -66,7 +66,9 @@ async function runInit(opts = {}) {
         console.error(`[31m✘[0m Writer provider "${answers.writerProvider}" is not enabled. Enabled: ${enabled.join(', ')}.`);
         process.exit(1);
     }
-    const yaml = generateConfig(answers);
+    const localSkills = await (0,node_fs_promises__WEBPACK_IMPORTED_MODULE_0__.access)('skills').then(() => true).catch(() => false);
+    const skillsBase = localSkills ? SKILLS_BASE_LOCAL : SKILLS_BASE_DEFAULT;
+    const yaml = generateConfig(answers, skillsBase);
     const envContent = generateEnv(answers);
     const envFile = answers.writeKeys ? '.env' : '.env.example';
     await (0,node_fs_promises__WEBPACK_IMPORTED_MODULE_0__.writeFile)('.secure-review.yml', yaml, 'utf8');
@@ -267,8 +269,9 @@ async function ask() {
         rl.close();
     }
 }
-const SKILLS_BASE = 'node_modules/secure-review/skills';
-function generateConfig(a) {
+const SKILLS_BASE_DEFAULT = 'node_modules/secure-review/skills';
+const SKILLS_BASE_LOCAL = 'skills';
+function generateConfig(a, skillsBase = SKILLS_BASE_DEFAULT) {
     const maxIterations = normalizeMaxIterations(a.maxIterations);
     const reviewers = [];
     if (a.useAnthropic) {
@@ -276,7 +279,7 @@ function generateConfig(a) {
             '  - name: anthropic-haiku',
             '    provider: anthropic',
             `    model: ${READER_MODEL_DEFAULTS.anthropic}`,
-            `    skill: ${SKILLS_BASE}/owasp-reviewer.md`,
+            `    skill: ${skillsBase}/owasp-reviewer.md`,
         ].join('\n'));
     }
     if (a.useOpenAI) {
@@ -284,7 +287,7 @@ function generateConfig(a) {
             '  - name: openai-mini',
             '    provider: openai',
             `    model: ${READER_MODEL_DEFAULTS.openai}`,
-            `    skill: ${SKILLS_BASE}/web-sec-reviewer.md`,
+            `    skill: ${skillsBase}/web-sec-reviewer.md`,
         ].join('\n'));
     }
     if (a.useGoogle) {
@@ -292,7 +295,7 @@ function generateConfig(a) {
             '  - name: gemini-flash',
             '    provider: google',
             `    model: ${READER_MODEL_DEFAULTS.google}`,
-            `    skill: ${SKILLS_BASE}/dependency-reviewer.md`,
+            `    skill: ${skillsBase}/dependency-reviewer.md`,
         ].join('\n'));
     }
     return `# secure-review configuration
@@ -304,7 +307,7 @@ writer:
   # generated the original code being reviewed.
   provider: ${a.writerProvider}
   model: ${a.writerModel}
-  skill: ${SKILLS_BASE}/secure-node-writer.md
+  skill: ${skillsBase}/secure-node-writer.md
 
 reviewers:
   # Readers only REPORT. Defaults are the cheapest tier per provider —

@@ -2,6 +2,20 @@
 
 All notable changes to `secure-review`. Newest first.
 
+## [0.5.13] — 2026-04-29
+
+First external contribution. All three changes from PR #1 by [@sstaempfli](https://github.com/sstaempfli) (Shana Stampfli) — caught while she was using the tool on her own work.
+
+### Fixes
+
+- **Anthropic JSON mode no longer 400s on Claude 4.6+ writers.** The previous implementation used the assistant-prefill trick (`messages: [user, assistant: '{']`) to coerce JSON output. Newer Claude models (`claude-sonnet-4-6`, and others in that line) reject prefill with `invalid_request_error: "This model does not support assistant message prefill. The conversation must end with a user message."` — which broke fix-mode whenever the writer was a 4.6 model (the default in the init scaffold). Replaced with an explicit user-turn instruction (`Return ONLY a JSON object. Your response must start with { and end with }`). Works on every model in the matrix, no parser glue required. Reported and fixed by **@sstaempfli**.
+- **`secure-review init` finds skills when run inside the repo itself.** When the CLI was invoked from a checkout of `secure-review` (rather than via `node_modules/secure-review`), the generated `.secure-review.yml` pointed at `node_modules/secure-review/skills/*.md` — paths that don't exist in that context. `generateConfig` now detects a local `skills/` directory and writes relative paths against it. Reported and fixed by **@sstaempfli**.
+- **Self-review CI now has a config to load.** Added a root `.secure-review.yml` so the dogfood `Secure Review` GitHub Action workflow has something to load on incoming PRs. Without this, the workflow couldn't run on PR #1 itself. Added by **@sstaempfli**.
+
+### Tests
+
+- 124/124 still passing — no test changes required by the prefill swap (the JSON parser already tolerated both representations).
+
 ## [0.5.12] — 2026-04-28
 
 Safety patch driven by three parallel post-publish audits (`BUGHUNT_REPORT_2026-04-28.md`, `TEST_GAPS_2026-04-28.md`, `ROBUSTNESS_REPORT_2026-04-28.md`). Six surgical fixes; 124/124 tests passing (up from 86/86).
