@@ -81,7 +81,9 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
     process.exit(1);
   }
 
-  const yaml = generateConfig(answers);
+  const localSkills = await access('skills').then(() => true).catch(() => false);
+  const skillsBase = localSkills ? SKILLS_BASE_LOCAL : SKILLS_BASE_DEFAULT;
+  const yaml = generateConfig(answers, skillsBase);
   const envContent = generateEnv(answers);
   const envFile = answers.writeKeys ? '.env' : '.env.example';
 
@@ -313,9 +315,10 @@ async function ask(): Promise<InitAnswers> {
   }
 }
 
-const SKILLS_BASE = 'node_modules/secure-review/skills';
+const SKILLS_BASE_DEFAULT = 'node_modules/secure-review/skills';
+const SKILLS_BASE_LOCAL = 'skills';
 
-export function generateConfig(a: InitAnswers): string {
+export function generateConfig(a: InitAnswers, skillsBase = SKILLS_BASE_DEFAULT): string {
   const maxIterations = normalizeMaxIterations(a.maxIterations);
   const reviewers: string[] = [];
   if (a.useAnthropic) {
@@ -324,7 +327,7 @@ export function generateConfig(a: InitAnswers): string {
         '  - name: anthropic-haiku',
         '    provider: anthropic',
         `    model: ${READER_MODEL_DEFAULTS.anthropic}`,
-        `    skill: ${SKILLS_BASE}/owasp-reviewer.md`,
+        `    skill: ${skillsBase}/owasp-reviewer.md`,
       ].join('\n'),
     );
   }
@@ -334,7 +337,7 @@ export function generateConfig(a: InitAnswers): string {
         '  - name: openai-mini',
         '    provider: openai',
         `    model: ${READER_MODEL_DEFAULTS.openai}`,
-        `    skill: ${SKILLS_BASE}/web-sec-reviewer.md`,
+        `    skill: ${skillsBase}/web-sec-reviewer.md`,
       ].join('\n'),
     );
   }
@@ -344,7 +347,7 @@ export function generateConfig(a: InitAnswers): string {
         '  - name: gemini-flash',
         '    provider: google',
         `    model: ${READER_MODEL_DEFAULTS.google}`,
-        `    skill: ${SKILLS_BASE}/dependency-reviewer.md`,
+        `    skill: ${skillsBase}/dependency-reviewer.md`,
       ].join('\n'),
     );
   }
@@ -358,7 +361,7 @@ writer:
   # generated the original code being reviewed.
   provider: ${a.writerProvider}
   model: ${a.writerModel}
-  skill: ${SKILLS_BASE}/secure-node-writer.md
+  skill: ${skillsBase}/secure-node-writer.md
 
 reviewers:
   # Readers only REPORT. Defaults are the cheapest tier per provider —
