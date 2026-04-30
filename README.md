@@ -4,7 +4,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/secure-review.svg)](https://www.npmjs.com/package/secure-review)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Multi-model security review for AI-generated code.** CLI and GitHub Action that runs several LLM reviewers (Anthropic, OpenAI, Google) and SAST tools (Semgrep, ESLint, npm audit) against your codebase. Findings are aggregated across reviewers — overlap becomes a confidence signal. Modes: `scan` (SAST only), `review` (multi-model report), `fix` (cross-model rotating loop applies fixes), `pr` (GitHub Action entrypoint), `benchmark` (compare writer models), `compare` (A/B path diff), `reviewer-benchmark` (single vs multi-model reviewer comparison).
+**Multi-model security review for AI-generated code.** CLI and GitHub Action that runs several LLM reviewers (Anthropic, OpenAI, Google) and SAST tools (Semgrep, ESLint, npm audit) against your codebase. Findings are aggregated across reviewers — overlap becomes a confidence signal. Modes: `scan` (SAST only), `review` (multi-model report), `fix` (cross-model rotating loop applies fixes), `pr` (GitHub Action entrypoint), `estimate` (preview cost without running), `baseline` (mark known/accepted findings), `benchmark` (compare writer models), `compare` (A/B path diff), `reviewer-benchmark` (single vs multi-model reviewer comparison).
 
 ```bash
 npm install --save-dev secure-review        # https://www.npmjs.com/package/secure-review
@@ -50,6 +50,8 @@ npx secure-review review ./src
 | `secure-review scan <path>` | SAST only — no AI calls, no API keys needed |
 | `secure-review review <path>` | Multi-model review, no file changes |
 | `secure-review fix <path>` | Iterative review → write → re-review loop |
+| `secure-review estimate <path> [--mode review\|fix]` | Print a pre-run cost estimate without invoking any model |
+| `secure-review baseline <findings.json> [--merge] [--reason ...]` | Create or update a `.secure-review-baseline.json` of known/accepted findings to suppress in subsequent runs |
 | `secure-review benchmark <path>` | Compare multiple writer models head-to-head on fix quality |
 | `secure-review compare <pathA> <pathB>` | Side-by-side security diff of two codebases |
 | `secure-review reviewer-benchmark <path>` | Show what each single model misses vs the combined multi-model ensemble |
@@ -196,10 +198,15 @@ Runs Semgrep, then ESLint, then npm audit, and normalizes their output to the sa
 ### `review` — multi-model parallel one-shot
 
 ```bash
-secure-review review ./src
+secure-review review ./src                 # full scan (asks before running once cost is shown)
+secure-review review ./src --since main    # only files changed since `main`
+secure-review review ./src --baseline none # ignore any local .secure-review-baseline.json
+secure-review review ./src --yes           # skip the cost-estimate prompt
 ```
 
-SAST runs first, then every reader (e.g. anthropic-haiku + openai-mini + gemini-flash) scans the **same code** with the SAST findings passed as prior context when enabled. Reviewers run in parallel by default; set `review.parallel: false` in `.secure-review.yml` to run them sequentially. Findings are deduped by `{file, line-bucket}` — overlapping findings at the same location merge regardless of CWE (models assign different CWEs to the same bug), and `reportedBy` accumulates names. Confidence per finding is `min(1, |reportedBy| / 3)`, so a finding flagged by 2 of 3 reporters is high-confidence. The report sorts findings by agreement count descending and highlights multi-model agreement with a badge.
+SAST runs first, then every reader (e.g. anthropic-haiku + openai-mini + gemini-flash) scans the **same code** with the SAST findings passed as prior context when enabled. Reviewers run in parallel by default; set `review.parallel: false` in `.secure-review.yml` to run them sequentially. Findings are deduped by `{file, line-bucket}` — overlapping findings at the same location merge regardless of CWE or title (models assign different CWEs to the same bug), and `reportedBy` accumulates names. Confidence per finding is `min(1, |reportedBy| / 3)`, so a finding flagged by 2 of 3 reporters is high-confidence. The report sorts findings by agreement count descending and highlights multi-model agreement with a badge.
+
+If a `.secure-review-baseline.json` is present in the scan root (or `--baseline <path>` is set), findings whose fingerprint matches an entry are excluded from the headline `findings` array (still recorded under `baselineSuppressed` for transparency). With `--since <ref>`, only files changed since that git ref are reviewed — useful on iterative PR workflows where the full tree hasn't changed.
 
 No file mutations. Output: `reports/review-<timestamp>.{md,json}`.
 
@@ -207,6 +214,9 @@ No file mutations. Output: `reports/review-<timestamp>.{md,json}`.
 
 ```bash
 secure-review fix ./src --max-iterations 3 --max-cost-usd 20
+secure-review fix ./src --since main                  # only files changed since `main`
+secure-review fix ./src --baseline ./baseline.json    # use a specific baseline file
+secure-review fix ./src --yes --no-estimate           # CI-friendly: skip prompt + skip preview
 ```
 
 The mode that actually fixes things. Three phases:
@@ -215,16 +225,20 @@ The mode that actually fixes things. Three phases:
 2. **Iteration loop** (rotating verifier per iter):
    - Step A: Writer applies fixes for the current findings list (iter 1: union; iter 2+: previous verifier's audit).
    - Step B: Next reader in rotation audits the writer's output with fresh eyes (different model = different blind spots).
-   - Step C: That audit becomes the next iteration's input.
-   - The loop only exits when **N consecutive verifiers** all see clean (full rotation), or a gate fires (`block_on_new_critical`, `max_cost_usd`, `max_wall_time_minutes`).
+   - Step C: Baseline filter + stable-ID annotation, then the audit becomes the next iteration's input.
+   - The loop only exits when **N consecutive verifiers** all see clean (full rotation), or a gate fires (`block_on_new_critical`, `max_cost_usd`, `max_wall_time_minutes`), or divergence is detected.
 3. **Final verification** — by default, all readers in parallel re-scan the final state. Catches anything the per-iteration verifiers missed individually.
 
 The writer is **always the same model**; the verifier rotates. This prevents the writer from drifting toward "code that satisfies one specific model" — every iteration a different judge shows up.
 
 **Safety controls:**
-- **Rollback** — if the writer introduces a new CRITICAL finding, the loop rolls back to the pre-iteration snapshot and stops. New files created by the writer are also removed.
-- **Convergence detection** — if total findings grow for 2 consecutive iterations, the loop stops to prevent regression spirals.
+- **Pre-run cost estimate** — before any model call, print a token-cost projection per model (point + ±30% band) and (in interactive shells) prompt for confirmation. `--yes` skips the prompt; `--no-estimate` skips the preview entirely. In CI / non-TTY contexts the estimate is printed but the run proceeds without prompting (`gates.max_cost_usd` remains the budget contract). Standalone preview: `secure-review estimate ./src --mode fix`.
+- **Baseline / FP suppression** — findings whose fingerprint matches `.secure-review-baseline.json` are filtered before the writer ever sees them and never appear in the `remaining` set, so the loop spends only on net-new issues.
+- **Stable finding IDs across iterations** — every finding is assigned a session-scoped `S-NNN` keyed on `{file, line-bucket}`. The same bug keeps the same ID even when the verifier rephrases it, so the per-iteration `resolved` and `introduced` deltas in the report reflect actual writer effects, not relabeling.
+- **Rollback** — if the writer introduces a new CRITICAL finding *and* a gate fires, the loop rolls back to the pre-iteration snapshot before stopping. New files created by the writer are also removed.
+- **Divergence detection** — if total findings grow for 2 consecutive iterations, the loop stops to prevent regression spirals (the F2 failure mode).
 - **Filtering** — configure `min_confidence_to_fix` and `min_severity_to_fix` in the config to limit what the writer attempts (e.g. only fix HIGH+ findings with ≥50% confidence).
+- **Incremental mode** — `--since <ref>` restricts the entire pipeline (SAST + readers + writer + final verification) to files Git reports as changed since that ref.
 
 > Earlier versions (pre-0.5.0) used a different loop: each iteration's reviewer scanned alone, single-reviewer-zero exited the loop early, and the initial scan was a vanity baseline metric. See [CHANGELOG.md](CHANGELOG.md) for the migration notes.
 

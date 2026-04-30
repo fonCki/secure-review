@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { createInterface } from 'node:readline/promises';
 
 // Auto-load .env from CWD if present. Saves users from
 // 'set -a; source .env; set +a' before every invocation.
@@ -26,7 +27,7 @@ import { runReviewerBenchmark, renderReviewerBenchmarkReport } from './modes/rev
 import { renderReviewReport, renderFixReport } from './reporters/markdown.js';
 import { renderReviewEvidence, renderFixEvidence } from './reporters/json.js';
 import { evaluatePrGates, postPrReview } from './reporters/github-pr.js';
-import { writeFileSafe, getGitChangedFiles } from './util/files.js';
+import { writeFileSafe, getGitChangedFiles, readSourceTree } from './util/files.js';
 import {
   DEFAULT_BASELINE_FILENAME,
   baselineFromFindings,
@@ -36,6 +37,11 @@ import {
 } from './findings/baseline.js';
 import { FindingSchema, type Finding } from './findings/schema.js';
 import { log, setQuiet, setVerbose } from './util/logger.js';
+import {
+  estimateRunCost,
+  formatEstimateText,
+  type EstimateMode,
+} from './util/estimate-cost.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -110,6 +116,53 @@ async function resolveBaseline(
     return { baseline, path: auto };
   }
   return { baseline: undefined };
+}
+
+/**
+ * Print a pre-run cost estimate and (in interactive shells) ask the user to
+ * confirm before spending the budget. Returns `true` if the run should proceed.
+ *
+ * Policy:
+ *   - `--no-estimate` / `--skip-cost-estimate` → silently proceed.
+ *   - `--yes`                                  → print estimate, skip prompt.
+ *   - interactive (TTY)                        → print estimate, ask.
+ *   - non-interactive (CI, piped stdin/out)    → print estimate, proceed.
+ *     (`gates.max_cost_usd` is the budget contract for unattended runs;
+ *      blocking on a missing TTY would break every CI invocation and the
+ *      experiment's reproducibility scripts.)
+ */
+async function previewAndConfirmCost(
+  scanRoot: string,
+  config: Awaited<ReturnType<typeof loadConfig>>['config'],
+  mode: EstimateMode,
+  flags: { yes: boolean; skipEstimate: boolean; quiet: boolean },
+): Promise<boolean> {
+  if (flags.skipEstimate) return true;
+  const files = await readSourceTree(scanRoot, 200_000);
+  if (files.length === 0) {
+    log.warn('No source files found under scan root — skipping cost estimate.');
+    return true;
+  }
+  const estimate = estimateRunCost({ config, files, mode });
+  if (!flags.quiet) {
+    log.info(formatEstimateText(estimate, mode, config.gates.max_cost_usd));
+  }
+  if (flags.yes) return true;
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    if (!flags.quiet) {
+      log.info(
+        `Non-interactive shell — proceeding without prompt. Cap: $${config.gates.max_cost_usd.toFixed(2)} (set --yes to silence this notice).`,
+      );
+    }
+    return true;
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question('Proceed? [y/N] ')).trim().toLowerCase();
+    return answer === 'y' || answer === 'yes';
+  } finally {
+    rl.close();
+  }
 }
 
 function enforceReviewHealth(output: {
@@ -242,14 +295,26 @@ async function main(): Promise<void> {
     .option('--baseline <file|none>', `baseline file of accepted findings; pass 'none' to disable (default: auto-detect ${DEFAULT_BASELINE_FILENAME} in scan root)`)
     .option('--task-id <id>', 'task identifier for evidence JSON', 'unknown')
     .option('--run <n>', 'run number', '1')
-    .action(async (path: string, opts: { config: string; outputDir: string; since?: string; baseline?: string; taskId: string; run: string }) => {
+    .option('-y, --yes', 'skip the pre-run cost-estimate confirmation prompt', false)
+    .option('--no-estimate', 'skip the pre-run cost estimate entirely (no print, no prompt)')
+    .action(async (path: string, opts: { config: string; outputDir: string; since?: string; baseline?: string; taskId: string; run: string; yes: boolean; estimate: boolean }) => {
       try {
         const { config, configDir } = await loadConfig(opts.config);
         const env = loadEnv();
-        const only = opts.since ? await getGitChangedFiles(resolve(path), opts.since) : undefined;
+        const root = resolve(path);
+        const proceed = await previewAndConfirmCost(root, config, 'review', {
+          yes: opts.yes,
+          skipEstimate: opts.estimate === false,
+          quiet: program.opts<{ quiet?: boolean }>().quiet === true,
+        });
+        if (!proceed) {
+          log.warn('Aborted by user before running review.');
+          process.exit(0);
+        }
+        const only = opts.since ? await getGitChangedFiles(root, opts.since) : undefined;
         if (only) log.info(`Incremental mode: ${only.size} file${only.size === 1 ? '' : 's'} changed since ${opts.since}`);
-        const { baseline } = await resolveBaseline(resolve(path), opts.baseline);
-        const output = await runReviewMode({ root: resolve(path), config, configDir, env, only, baseline });
+        const { baseline } = await resolveBaseline(root, opts.baseline);
+        const output = await runReviewMode({ root, config, configDir, env, only, baseline });
         enforceReviewHealth(output);
 
         const stamp = timestamp();
@@ -300,20 +365,32 @@ async function main(): Promise<void> {
     .option('--max-cost-usd <n>', 'override cost cap', parseMaxCostUsd)
     .option('--task-id <id>', 'task identifier for evidence JSON', 'unknown')
     .option('--run <n>', 'run number', '1')
+    .option('-y, --yes', 'skip the pre-run cost-estimate confirmation prompt', false)
+    .option('--no-estimate', 'skip the pre-run cost estimate entirely (no print, no prompt)')
     .action(
       async (
         path: string,
-        opts: { config: string; outputDir: string; since?: string; baseline?: string; maxIterations?: number; maxCostUsd?: number; taskId: string; run: string },
+        opts: { config: string; outputDir: string; since?: string; baseline?: string; maxIterations?: number; maxCostUsd?: number; taskId: string; run: string; yes: boolean; estimate: boolean },
       ) => {
         try {
           const { config, configDir } = await loadConfig(opts.config);
           const env = loadEnv();
           if (opts.maxIterations !== undefined) config.fix.max_iterations = opts.maxIterations;
           applyMaxCostOverride(config, opts.maxCostUsd);
-          const only = opts.since ? await getGitChangedFiles(resolve(path), opts.since) : undefined;
+          const root = resolve(path);
+          const proceed = await previewAndConfirmCost(root, config, 'fix', {
+            yes: opts.yes,
+            skipEstimate: opts.estimate === false,
+            quiet: program.opts<{ quiet?: boolean }>().quiet === true,
+          });
+          if (!proceed) {
+            log.warn('Aborted by user before running fix.');
+            process.exit(0);
+          }
+          const only = opts.since ? await getGitChangedFiles(root, opts.since) : undefined;
           if (only) log.info(`Incremental mode: ${only.size} file${only.size === 1 ? '' : 's'} changed since ${opts.since}`);
-          const { baseline } = await resolveBaseline(resolve(path), opts.baseline);
-          const output = await runFixMode({ root: resolve(path), config, configDir, env, only, baseline });
+          const { baseline } = await resolveBaseline(root, opts.baseline);
+          const output = await runFixMode({ root, config, configDir, env, only, baseline });
           enforceReviewHealth(output);
 
           const stamp = timestamp();
@@ -346,7 +423,7 @@ async function main(): Promise<void> {
             reviewerNames: config.reviewers.map((r) => r.name),
           });
           await writeFileSafe(jsonPath, JSON.stringify(evidence, null, 2));
-          await writeFileSafe(diffPath, await readGitDiff(resolve(path)));
+          await writeFileSafe(diffPath, await readGitDiff(root));
 
           log.success(`Report:    ${mdPath}`);
           log.success(`Findings:  ${jsonPath}`);
@@ -445,6 +522,34 @@ async function main(): Promise<void> {
           log.error(`PR gate blocked: ${prGate.reasons.join('; ')}`);
           process.exit(2);
         }
+      } catch (err) {
+        log.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('estimate')
+    .description('Print a pre-run cost estimate without invoking any model.')
+    .argument('<path>', 'path that would be reviewed/fixed')
+    .option('-c, --config <file>', 'config file', '.secure-review.yml')
+    .option('-m, --mode <mode>', 'estimate for `review` or `fix` mode', 'fix')
+    .option('--max-iterations <n>', 'override max iterations (fix mode)', parseMaxIterations)
+    .action(async (path: string, opts: { config: string; mode: string; maxIterations?: number }) => {
+      try {
+        const mode = opts.mode === 'review' ? 'review' : 'fix';
+        if (opts.mode !== 'review' && opts.mode !== 'fix') {
+          log.warn(`Unknown mode '${opts.mode}', defaulting to 'fix'`);
+        }
+        const { config } = await loadConfig(opts.config);
+        if (opts.maxIterations !== undefined) config.fix.max_iterations = opts.maxIterations;
+        const files = await readSourceTree(resolve(path), 200_000);
+        if (files.length === 0) {
+          log.warn('No source files found under scan root.');
+          return;
+        }
+        const estimate = estimateRunCost({ config, files, mode });
+        log.info(formatEstimateText(estimate, mode, config.gates.max_cost_usd));
       } catch (err) {
         log.error(err instanceof Error ? err.message : String(err));
         process.exit(1);
@@ -587,7 +692,7 @@ async function main(): Promise<void> {
   // subcommand — without this shim the CLI would print --help and exit.
   const argv = [...process.argv];
   const inRunner = process.env.GITHUB_ACTIONS === 'true';
-  const hasSubcommand = argv.slice(2).some((a) => ['review', 'fix', 'pr', 'scan', 'help', 'benchmark', 'compare', 'reviewer-benchmark'].includes(a));
+  const hasSubcommand = argv.slice(2).some((a) => ['review', 'fix', 'pr', 'scan', 'help', 'benchmark', 'compare', 'reviewer-benchmark', 'baseline', 'estimate', 'init', 'setup-secrets'].includes(a));
   if (inRunner && !hasSubcommand) {
     const mode = (process.env.INPUT_MODE ?? 'review').toLowerCase();
     argv.push('pr');

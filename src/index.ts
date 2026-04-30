@@ -26,3 +26,5 @@ export { postPrReview } from './reporters/github-pr.js';
 export { getAdapter } from './adapters/factory.js';
 export type { ModelAdapter, CompleteInput, CompleteOutput, Usage } from './adapters/types.js';
 export { estimateCost, knownModel } from './util/cost.js';
+export { estimateRunCost, formatEstimateText } from './util/estimate-cost.js';
+export type { CostEstimate, EstimateInput, EstimateMode, ModelEstimate } from './util/estimate-cost.js';
