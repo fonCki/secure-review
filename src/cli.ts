@@ -25,6 +25,7 @@ import { runBenchmarkMode, renderBenchmarkReport } from './modes/benchmark.js';
 import { runCompareMode, renderCompareReport } from './modes/compare.js';
 import { runReviewerBenchmark, renderReviewerBenchmarkReport } from './modes/reviewer-benchmark.js';
 import { renderReviewReport, renderFixReport } from './reporters/markdown.js';
+import { renderReviewHtml, renderFixHtml } from './reporters/html.js';
 import { renderReviewEvidence, renderFixEvidence } from './reporters/json.js';
 import { evaluatePrGates, postPrReview } from './reporters/github-pr.js';
 import { writeFileSafe, getGitChangedFiles, readSourceTree } from './util/files.js';
@@ -325,6 +326,7 @@ async function main(): Promise<void> {
           `review-${stamp}.md`,
           stamp,
         );
+        const htmlPath = mdPath.replace(/\.md$/, '.html');
         const jsonPath = outputPath(
           config.output.findings,
           DEFAULT_OUTPUT.findings,
@@ -333,6 +335,7 @@ async function main(): Promise<void> {
           stamp,
         );
         await writeFileSafe(mdPath, renderReviewReport(output));
+        await writeFileSafe(htmlPath, renderReviewHtml(output));
         const evidence = renderReviewEvidence(output, {
           taskId: opts.taskId,
           run: Number(opts.run),
@@ -342,6 +345,7 @@ async function main(): Promise<void> {
         await writeFileSafe(jsonPath, JSON.stringify(evidence, null, 2));
 
         log.success(`Report:    ${mdPath}`);
+        log.success(`HTML:      ${htmlPath}`);
         log.success(`Findings:  ${jsonPath}`);
         const baselineNote = output.baselineSuppressed.length > 0
           ? ` · ${output.baselineSuppressed.length} baselined`
@@ -401,6 +405,7 @@ async function main(): Promise<void> {
             `fix-${stamp}.md`,
             stamp,
           );
+          const htmlPath = mdPath.replace(/\.md$/, '.html');
           const jsonPath = outputPath(
             config.output.findings,
             DEFAULT_OUTPUT.findings,
@@ -416,6 +421,7 @@ async function main(): Promise<void> {
             stamp,
           );
           await writeFileSafe(mdPath, renderFixReport(output));
+          await writeFileSafe(htmlPath, renderFixHtml(output));
           const evidence = renderFixEvidence(output, {
             taskId: opts.taskId,
             run: Number(opts.run),
@@ -426,6 +432,7 @@ async function main(): Promise<void> {
           await writeFileSafe(diffPath, await readGitDiff(root));
 
           log.success(`Report:    ${mdPath}`);
+          log.success(`HTML:      ${htmlPath}`);
           log.success(`Findings:  ${jsonPath}`);
           log.success(`Diff:      ${diffPath}`);
           const baselineNote = output.baselineSuppressed.length > 0

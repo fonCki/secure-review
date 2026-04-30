@@ -456,9 +456,10 @@ Adapted from `secure-code-despite-ai`'s Section 13 threats-to-validity. None of 
 
 ## Output schema
 
-Both `review` and `fix` modes emit two report files per run:
+Both `review` and `fix` modes emit three report files per run:
 
 - `reports/<mode>-<timestamp>.md` — human-readable Markdown report.
+- `reports/<mode>-<timestamp>.html` — self-contained interactive report (inline CSS + JS, no external assets). Sortable/filterable findings list, collapsible details per finding, fix-mode adds a before/after delta + per-iteration timeline. Works offline; safe to commit, attach to a PR comment, or open from a CI artifact.
 - `reports/<mode>-<timestamp>.json` — structured evidence JSON, schema-stable across versions (defined in `src/findings/schema.ts`).
 
 The JSON schema is **deliberately compatible with `secure-code-despite-ai`'s Condition D evidence format** — `secure-review` runs are tagged `condition: "F-review"` or `condition: "F-fix"` so they plot directly alongside the original A/B/C/D baselines without conversion. Think of `secure-review` output as **Condition F**: an extension of the original experimental matrix, not a parallel format.

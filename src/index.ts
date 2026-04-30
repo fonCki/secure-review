@@ -21,6 +21,7 @@ export { runFixMode } from './modes/fix.js';
 export { runAllSast } from './sast/index.js';
 export { evaluateGates } from './gates/evaluate.js';
 export { renderReviewReport, renderFixReport } from './reporters/markdown.js';
+export { renderReviewHtml, renderFixHtml } from './reporters/html.js';
 export { renderReviewEvidence, renderFixEvidence } from './reporters/json.js';
 export { postPrReview } from './reporters/github-pr.js';
 export { getAdapter } from './adapters/factory.js';

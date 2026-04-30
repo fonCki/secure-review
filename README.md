@@ -208,7 +208,7 @@ SAST runs first, then every reader (e.g. anthropic-haiku + openai-mini + gemini-
 
 If a `.secure-review-baseline.json` is present in the scan root (or `--baseline <path>` is set), findings whose fingerprint matches an entry are excluded from the headline `findings` array (still recorded under `baselineSuppressed` for transparency). With `--since <ref>`, only files changed since that git ref are reviewed — useful on iterative PR workflows where the full tree hasn't changed.
 
-No file mutations. Output: `reports/review-<timestamp>.{md,json}`.
+No file mutations. Output: `reports/review-<timestamp>.{md,html,json}`. The HTML report is a single self-contained file (inline CSS + vanilla JS, no external assets) with sortable/filterable findings, severity badges, agreement counts, and collapsible per-finding detail. Open it in any browser; works offline.
 
 ### `fix` — cross-model rotating loop *(0.5.0+ semantics)*
 
@@ -242,7 +242,7 @@ The writer is **always the same model**; the verifier rotates. This prevents the
 
 > Earlier versions (pre-0.5.0) used a different loop: each iteration's reviewer scanned alone, single-reviewer-zero exited the loop early, and the initial scan was a vanity baseline metric. See [CHANGELOG.md](CHANGELOG.md) for the migration notes.
 
-Output: `reports/fix-<timestamp>.{md,json}` plus modified source files.
+Output: `reports/fix-<timestamp>.{md,html,json}` plus the unified diff (`fix-<timestamp>.patch`) and modified source files. The HTML report adds a before/after delta block and a per-iteration timeline with the resolved/introduced split per iteration — useful for thesis presentations and code-review walk-throughs.
 
 ### `benchmark` — compare writer models
 
