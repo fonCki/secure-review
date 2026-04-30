@@ -153,21 +153,27 @@ export async function runBenchmarkMode(input: BenchmarkModeInput): Promise<Bench
           `Writer ${writerName} changed ${filesChanged} file(s) ($${costUSD.toFixed(3)})`,
         );
 
-        // Re-scan with the first reviewer to measure outcomes
+        // Re-scan with ALL reviewers in parallel — same as the initial scan —
+        // so the outcome measurement matches the combined multi-model view.
         const postFiles = await readSourceTree(root);
         const postSast = await runAllSast(root, config.sast);
-        const verifier = reviewerInstances[0]!;
-        const vSpinner = spinner(`Measuring outcomes with ${verifier.ref.name}`);
-        const verifierRun = await runReviewer({
-          reviewer: verifier.ref,
-          adapter: verifier.adapter,
-          skill: verifier.skill,
-          files: postFiles,
-          priorFindings: config.sast.inject_into_reviewer_context ? postSast.findings : undefined,
-        });
-        costUSD += verifierRun.usage.costUSD;
+        const vSpinner = spinner(
+          `Measuring outcomes with all ${N} reviewer${N === 1 ? '' : 's'} (combined view)`,
+        );
+        const verifierRuns = await Promise.all(
+          reviewerInstances.map((r) =>
+            runReviewer({
+              reviewer: r.ref,
+              adapter: r.adapter,
+              skill: r.skill,
+              files: postFiles,
+              priorFindings: config.sast.inject_into_reviewer_context ? postSast.findings : undefined,
+            }),
+          ),
+        );
+        for (const vr of verifierRuns) costUSD += vr.usage.costUSD;
         const postFindings = aggregate([
-          ...normalizeFindingPaths(verifierRun.findings, root),
+          ...verifierRuns.flatMap((vr) => normalizeFindingPaths(vr.findings, root)),
           ...postSast.findings,
         ]);
         const diff = diffFindings(initialFindings, postFindings);
