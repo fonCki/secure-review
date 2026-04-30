@@ -22,6 +22,7 @@ import { runReviewMode } from './modes/review.js';
 import { runFixMode } from './modes/fix.js';
 import { runBenchmarkMode, renderBenchmarkReport } from './modes/benchmark.js';
 import { runCompareMode, renderCompareReport } from './modes/compare.js';
+import { runReviewerBenchmark, renderReviewerBenchmarkReport } from './modes/reviewer-benchmark.js';
 import { renderReviewReport, renderFixReport } from './reporters/markdown.js';
 import { renderReviewEvidence, renderFixEvidence } from './reporters/json.js';
 import { evaluatePrGates, postPrReview } from './reporters/github-pr.js';
@@ -459,12 +460,39 @@ async function main(): Promise<void> {
       }
     });
 
+  program
+    .command('reviewer-benchmark')
+    .description('Benchmark single-model vs combined multi-model reviewer — shows what each model misses')
+    .argument('<path>', 'directory to review')
+    .option('-c, --config <file>', 'config file', '.secure-review.yml')
+    .option('-o, --output-dir <dir>', 'output directory for reports', './reports')
+    .action(async (scanPath: string, opts: { config: string; outputDir: string }) => {
+      try {
+        const { config, configDir } = await loadConfig(opts.config);
+        const env = loadEnv();
+        const stamp = timestamp();
+        const output = await runReviewerBenchmark({
+          root: resolve(scanPath),
+          config,
+          configDir,
+          env,
+        });
+        const md = renderReviewerBenchmarkReport(output);
+        const mdPath = resolve(opts.outputDir, `reviewer-benchmark-${stamp}.md`);
+        await writeFileSafe(mdPath, md);
+        log.success(`Reviewer benchmark report: ${mdPath}`);
+      } catch (err) {
+        log.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
   // When running inside GitHub Actions with no explicit subcommand, default to `pr`.
   // The action.yml runs this entry with inputs mapped to env vars but no argv
   // subcommand — without this shim the CLI would print --help and exit.
   const argv = [...process.argv];
   const inRunner = process.env.GITHUB_ACTIONS === 'true';
-  const hasSubcommand = argv.slice(2).some((a) => ['review', 'fix', 'pr', 'scan', 'help', 'benchmark', 'compare'].includes(a));
+  const hasSubcommand = argv.slice(2).some((a) => ['review', 'fix', 'pr', 'scan', 'help', 'benchmark', 'compare', 'reviewer-benchmark'].includes(a));
   if (inRunner && !hasSubcommand) {
     const mode = (process.env.INPUT_MODE ?? 'review').toLowerCase();
     argv.push('pr');
