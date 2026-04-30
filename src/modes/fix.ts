@@ -22,6 +22,8 @@ export interface FixModeInput {
   config: SecureReviewConfig;
   configDir: string;
   env: Env;
+  /** If set, only files whose relPath is in this set are reviewed (incremental mode). */
+  only?: Set<string>;
 }
 
 /**
@@ -45,6 +47,8 @@ export interface IterationRecord {
   writerRun?: WriterRunOutput;
   findingsBefore: Finding[];
   findingsAfter: Finding[];
+  resolvedFindings: Finding[];
+  introducedFindings: Finding[];
   newCritical: number;
   resolved: number;
   costUSD: number;
@@ -131,10 +135,10 @@ export function filterFindingsForWriter(
  *      still see issues.
  */
 export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
-  const { root, config, configDir, env } = input;
+  const { root, config, configDir, env, only } = input;
   const start = Date.now();
 
-  log.header(`Fix mode — ${root}`);
+  log.header(`Fix mode — ${root}${only ? ` (incremental: ${only.size} file${only.size === 1 ? '' : 's'})` : ''}`);
   log.info(
     `Rotation: ${config.fix.mode} · max ${config.fix.max_iterations} iterations · ${config.reviewers.length} reviewers`,
   );
@@ -156,7 +160,7 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
   };
 
   // 1) INITIAL UNION SCAN — all readers in parallel + SAST.
-  const initialFiles = await readSourceTree(root);
+  const initialFiles = await readSourceTree(root, 200_000, only);
   const sastSpinner = spinner('Initial scan: SAST (semgrep + eslint + npm-audit)');
   const initialSast = await runAllSast(root, config.sast);
   sastSpinner.succeed(
@@ -327,6 +331,8 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
             writerRun,
             findingsBefore: findingsToFix,
             findingsAfter,
+            resolvedFindings: diff.resolved,
+            introducedFindings: diff.introduced,
             newCritical,
             resolved: diff.resolved.length,
             costUSD: (writerRun?.usage.costUSD ?? 0) + verifierRun.usage.costUSD,
@@ -348,6 +354,8 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
         writerRun,
         findingsBefore: findingsToFix,
         findingsAfter,
+        resolvedFindings: diff.resolved,
+        introducedFindings: diff.introduced,
         newCritical,
         resolved: diff.resolved.length,
         costUSD: (writerRun?.usage.costUSD ?? 0) + verifierRun.usage.costUSD,

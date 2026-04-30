@@ -1,6 +1,10 @@
 import { readdir, readFile, stat, writeFile, mkdir } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { Finding } from '../findings/schema.js';
+
+const execFileAsync = promisify(execFile);
 
 export interface FileContent {
   /** Absolute path. */
@@ -55,7 +59,11 @@ const LOCKFILE_NAMES = new Set([
 ]);
 
 /** Recursively read source files under a path, skipping common junk. */
-export async function readSourceTree(root: string, maxBytesPerFile = 200_000): Promise<FileContent[]> {
+export async function readSourceTree(
+  root: string,
+  maxBytesPerFile = 200_000,
+  only?: Set<string>,
+): Promise<FileContent[]> {
   const abs = resolve(root);
   const info = await stat(abs);
   if (info.isFile()) {
@@ -64,7 +72,31 @@ export async function readSourceTree(root: string, maxBytesPerFile = 200_000): P
   }
   const files: FileContent[] = [];
   await walk(abs, abs, files, maxBytesPerFile);
+  if (only && only.size > 0) {
+    return files.filter((f) => only.has(f.relPath));
+  }
   return files;
+}
+
+/**
+ * Return the set of relative paths changed since a git ref (branch, commit, tag).
+ * Uses `git diff --name-only <since>` — only files present in the working tree
+ * are returned (deleted files are excluded since we can't review them).
+ */
+export async function getGitChangedFiles(root: string, since: string): Promise<Set<string>> {
+  const rootAbs = resolve(root);
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-C', rootAbs, 'diff', '--name-only', '--diff-filter=ACMR', since],
+      { maxBuffer: 10 * 1024 * 1024 },
+    );
+    const paths = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+    return new Set(paths);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`git diff --name-only ${since} failed: ${msg}`);
+  }
 }
 
 async function walk(dir: string, root: string, out: FileContent[], maxBytes: number): Promise<void> {

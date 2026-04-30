@@ -15,6 +15,8 @@ export interface ReviewModeInput {
   config: SecureReviewConfig;
   configDir: string;
   env: Env;
+  /** If set, only files whose relPath is in this set are reviewed (incremental mode). */
+  only?: Set<string>;
 }
 
 export interface ReviewModeOutput {
@@ -30,14 +32,14 @@ export interface ReviewModeOutput {
 }
 
 export async function runReviewMode(input: ReviewModeInput): Promise<ReviewModeOutput> {
-  const { root, config, configDir, env } = input;
+  const { root, config, configDir, env, only } = input;
   const started = Date.now();
 
-  log.header(`Review mode — ${root}`);
+  log.header(`Review mode — ${root}${only ? ` (incremental: ${only.size} file${only.size === 1 ? '' : 's'})` : ''}`);
   log.info(`Reviewers: ${config.reviewers.map((r) => r.name).join(', ')}`);
 
   // 1. Read source tree
-  const files = await readSourceTree(root);
+  const files = await readSourceTree(root, 200_000, only);
   log.info(`Loaded ${files.length} source files`);
 
   // 2. Run SAST (treat its findings as additional "reviewers")

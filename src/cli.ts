@@ -26,7 +26,7 @@ import { runReviewerBenchmark, renderReviewerBenchmarkReport } from './modes/rev
 import { renderReviewReport, renderFixReport } from './reporters/markdown.js';
 import { renderReviewEvidence, renderFixEvidence } from './reporters/json.js';
 import { evaluatePrGates, postPrReview } from './reporters/github-pr.js';
-import { writeFileSafe } from './util/files.js';
+import { writeFileSafe, getGitChangedFiles } from './util/files.js';
 import { log, setQuiet, setVerbose } from './util/logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -159,13 +159,16 @@ async function main(): Promise<void> {
     .argument('<path>', 'path to review')
     .option('-c, --config <file>', 'config file', '.secure-review.yml')
     .option('-o, --output-dir <dir>', 'output directory', './reports')
+    .option('--since <ref>', 'only review files changed since this git ref (branch, commit, or tag)')
     .option('--task-id <id>', 'task identifier for evidence JSON', 'unknown')
     .option('--run <n>', 'run number', '1')
-    .action(async (path: string, opts: { config: string; outputDir: string; taskId: string; run: string }) => {
+    .action(async (path: string, opts: { config: string; outputDir: string; since?: string; taskId: string; run: string }) => {
       try {
         const { config, configDir } = await loadConfig(opts.config);
         const env = loadEnv();
-        const output = await runReviewMode({ root: resolve(path), config, configDir, env });
+        const only = opts.since ? await getGitChangedFiles(resolve(path), opts.since) : undefined;
+        if (only) log.info(`Incremental mode: ${only.size} file${only.size === 1 ? '' : 's'} changed since ${opts.since}`);
+        const output = await runReviewMode({ root: resolve(path), config, configDir, env, only });
         enforceReviewHealth(output);
 
         const stamp = timestamp();
@@ -207,6 +210,7 @@ async function main(): Promise<void> {
     .argument('<path>', 'path to review and fix')
     .option('-c, --config <file>', 'config file', '.secure-review.yml')
     .option('-o, --output-dir <dir>', 'output directory', './reports')
+    .option('--since <ref>', 'only review/fix files changed since this git ref (branch, commit, or tag)')
     .option('--max-iterations <n>', 'override max iterations', parseMaxIterations)
     .option('--max-cost-usd <n>', 'override cost cap', parseMaxCostUsd)
     .option('--task-id <id>', 'task identifier for evidence JSON', 'unknown')
@@ -214,14 +218,16 @@ async function main(): Promise<void> {
     .action(
       async (
         path: string,
-        opts: { config: string; outputDir: string; maxIterations?: number; maxCostUsd?: number; taskId: string; run: string },
+        opts: { config: string; outputDir: string; since?: string; maxIterations?: number; maxCostUsd?: number; taskId: string; run: string },
       ) => {
         try {
           const { config, configDir } = await loadConfig(opts.config);
           const env = loadEnv();
           if (opts.maxIterations !== undefined) config.fix.max_iterations = opts.maxIterations;
           applyMaxCostOverride(config, opts.maxCostUsd);
-          const output = await runFixMode({ root: resolve(path), config, configDir, env });
+          const only = opts.since ? await getGitChangedFiles(resolve(path), opts.since) : undefined;
+          if (only) log.info(`Incremental mode: ${only.size} file${only.size === 1 ? '' : 's'} changed since ${opts.since}`);
+          const output = await runFixMode({ root: resolve(path), config, configDir, env, only });
           enforceReviewHealth(output);
 
           const stamp = timestamp();

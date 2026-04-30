@@ -1,4 +1,5 @@
 import type { Finding, SeverityBreakdown } from '../findings/schema.js';
+import { SEVERITY_ORDER } from '../findings/schema.js';
 import type { ReviewModeOutput } from '../modes/review.js';
 import type { FixModeOutput } from '../modes/fix.js';
 import { agreementCount } from '../findings/aggregate.js';
@@ -75,15 +76,38 @@ export function renderFixReport(output: FixModeOutput): string {
     parts.push('| # | Verifier | Findings In | Findings Out | Resolved | Introduced (CRITICAL) | Cost (USD) |');
     parts.push('|---:|---|---:|---:|---:|---:|---:|');
     for (const it of output.iterations) {
-      const introduced = it.findingsAfter.length - (it.findingsBefore.length - it.resolved);
+      const introduced = it.introducedFindings?.length ?? Math.max(0, it.findingsAfter.length - (it.findingsBefore.length - it.resolved));
       parts.push(
-        `| ${it.iteration} | ${it.reviewer} | ${it.findingsBefore.length} | ${it.findingsAfter.length} | ${it.resolved} | ${Math.max(0, introduced)} (${it.newCritical}) | ${it.costUSD.toFixed(3)} |`,
+        `| ${it.iteration} | ${it.reviewer} | ${it.findingsBefore.length} | ${it.findingsAfter.length} | ${it.resolved} | ${introduced} (${it.newCritical}) | ${it.costUSD.toFixed(3)} |`,
       );
     }
     parts.push('');
     parts.push(
       '> _Findings In_ = what the writer addressed this iteration (union of initial readers for iter 1, previous verifier\'s audit for iter 2+). _Findings Out_ = what the rotating verifier saw after the writer ran.',
     );
+    parts.push('');
+
+    // Per-iteration finding detail
+    for (const it of output.iterations) {
+      const resolved = it.resolvedFindings ?? [];
+      const introduced = it.introducedFindings ?? [];
+      if (resolved.length === 0 && introduced.length === 0) continue;
+      parts.push(`### Iteration ${it.iteration} detail\n`);
+      if (resolved.length > 0) {
+        parts.push(`**Resolved (${resolved.length}):**\n`);
+        for (const f of resolved) {
+          parts.push(`- ~~${f.severity}~~ \`${f.file}:${f.lineStart}\` — ${f.title}${f.cwe ? ` (${f.cwe})` : ''}`);
+        }
+        parts.push('');
+      }
+      if (introduced.length > 0) {
+        parts.push(`**Introduced (${introduced.length}):**\n`);
+        for (const f of introduced) {
+          parts.push(`- **${f.severity}** \`${f.file}:${f.lineStart}\` — ${f.title}${f.cwe ? ` (${f.cwe})` : ''}`);
+        }
+        parts.push('');
+      }
+    }
   }
   parts.push('');
 
@@ -132,7 +156,7 @@ function renderFinding(f: Finding): string {
 
 - **File:** \`${f.file}:${f.lineStart}-${f.lineEnd}\`
 - **Tags:** ${tags || '—'}
-- **Reported by:** ${reporters}  (confidence: ${(f.confidence * 100).toFixed(0)}%, agreement: ${count}/${count > 0 ? Math.max(count, 1) : 1} model${count !== 1 ? 's' : ''})
+- **Reported by:** ${reporters}  (confidence: ${(f.confidence * 100).toFixed(0)}%, agreement: ${count} model${count !== 1 ? 's' : ''})
 
 ${f.description}
 
@@ -145,9 +169,7 @@ function sortByAgreement(findings: Finding[]): Finding[] {
   return [...findings].sort((a, b) => {
     const cntDiff = agreementCount(b) - agreementCount(a);
     if (cntDiff !== 0) return cntDiff;
-    // Secondary: severity order (higher severity first)
-    const SEV: Record<string, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, INFO: 0 };
-    return (SEV[b.severity] ?? 0) - (SEV[a.severity] ?? 0);
+    return SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity];
   });
 }
 

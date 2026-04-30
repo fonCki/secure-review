@@ -6,7 +6,10 @@ import { SEVERITY_ORDER, type Finding, type SeverityBreakdown } from './schema.j
  * Two findings are treated as the same issue if they share:
  *   - the same file
  *   - an overlapping line window (we bucket by lineStart//10)
- *   - the same CWE (or both missing a CWE but same title prefix)
+ *
+ * NOTE: We intentionally do NOT include CWE in the deduplication key because
+ * different models/tools often assign different CWEs to the same underlying bug,
+ * which would prevent cross-model merges and depress agreement.
  *
  * On merge:
  *   - keep the highest severity
