@@ -71,3 +71,8 @@ export function severityBreakdown(findings: Finding[]): SeverityBreakdown {
 export function countBySeverity(findings: Finding[], severity: Finding['severity']): number {
   return findings.filter((f) => f.severity === severity).length;
 }
+
+/** Number of distinct models that reported this finding. */
+export function agreementCount(finding: Finding): number {
+  return finding.reportedBy.length;
+}

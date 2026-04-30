@@ -36,6 +36,10 @@ export const FixConfig = z.object({
   mode: z.enum(['sequential_rotation', 'parallel_aggregate']).default('sequential_rotation'),
   max_iterations: z.number().int().min(1).max(10).default(3),
   final_verification: z.enum(['all_reviewers', 'first_reviewer', 'none']).default('all_reviewers'),
+  /** Only send findings with confidence >= this threshold to the writer (0 = no filter). */
+  min_confidence_to_fix: z.number().min(0).max(1).default(0),
+  /** Only send findings at or above this severity to the writer (default 'INFO' = all). */
+  max_severity_to_fix: z.enum(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']).default('INFO'),
 });
 
 export const GatesConfig = z.object({
@@ -53,6 +57,8 @@ export const OutputConfig = z.object({
 
 export const SecureReviewConfigSchema = z.object({
   writer: ModelRef,
+  /** Optional list of additional writer models for benchmarking. */
+  writers: z.array(ModelRef).optional(),
   reviewers: z.array(ReviewerRef).min(1),
   sast: SastConfig.default({
     enabled: true,
@@ -64,6 +70,8 @@ export const SecureReviewConfigSchema = z.object({
     mode: 'sequential_rotation',
     max_iterations: 3,
     final_verification: 'all_reviewers',
+    min_confidence_to_fix: 0,
+    max_severity_to_fix: 'INFO',
   }),
   gates: GatesConfig.default({
     block_on_new_critical: true,

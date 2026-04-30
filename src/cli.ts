@@ -20,6 +20,8 @@ import { Command, InvalidArgumentError } from 'commander';
 import { loadConfig, loadEnv } from './config/load.js';
 import { runReviewMode } from './modes/review.js';
 import { runFixMode } from './modes/fix.js';
+import { runBenchmarkMode, renderBenchmarkReport } from './modes/benchmark.js';
+import { runCompareMode, renderCompareReport } from './modes/compare.js';
 import { renderReviewReport, renderFixReport } from './reporters/markdown.js';
 import { renderReviewEvidence, renderFixEvidence } from './reporters/json.js';
 import { evaluatePrGates, postPrReview } from './reporters/github-pr.js';
@@ -394,12 +396,75 @@ async function main(): Promise<void> {
       }
     });
 
+  program
+    .command('benchmark')
+    .description('Benchmark writer models: run initial scan then test each writer one iteration.')
+    .argument('<path>', 'path to scan and fix')
+    .option('-c, --config <file>', 'config file', '.secure-review.yml')
+    .option('-o, --output-dir <dir>', 'output directory', './reports')
+    .action(async (path: string, opts: { config: string; outputDir: string }) => {
+      try {
+        const { config, configDir } = await loadConfig(opts.config);
+        const env = loadEnv();
+        const output = await runBenchmarkMode({ root: resolve(path), config, configDir, env });
+
+        const stamp = timestamp();
+        const mdPath = resolve(opts.outputDir, `benchmark-${stamp}.md`);
+        const report = renderBenchmarkReport(output);
+        await writeFileSafe(mdPath, report);
+
+        log.success(`Benchmark report: ${mdPath}`);
+        log.info(`\n${report}`);
+      } catch (err) {
+        log.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('compare')
+    .description('Compare security findings between two paths side-by-side.')
+    .argument('<path-a>', 'first path to review')
+    .argument('<path-b>', 'second path to review')
+    .option('-c, --config <file>', 'config file', '.secure-review.yml')
+    .option('-o, --output-dir <dir>', 'output directory', './reports')
+    .action(async (pathA: string, pathB: string, opts: { config: string; outputDir: string }) => {
+      try {
+        const { config, configDir } = await loadConfig(opts.config);
+        const env = loadEnv();
+        const output = await runCompareMode({
+          rootA: resolve(pathA),
+          rootB: resolve(pathB),
+          config,
+          configDir,
+          env,
+        });
+
+        const stamp = timestamp();
+        const mdPath = resolve(opts.outputDir, `compare-${stamp}.md`);
+        const report = renderCompareReport(output);
+        await writeFileSafe(mdPath, report);
+
+        log.success(`Compare report: ${mdPath}`);
+        log.info(`Delta: B is ${output.delta} vs A`);
+        log.info(
+          `  A: ${output.outputA.findings.length} findings, B: ${output.outputB.findings.length} findings`,
+        );
+        log.info(
+          `  Common: ${output.common.length}, Unique to A: ${output.uniqueToA.length}, Unique to B: ${output.uniqueToB.length}`,
+        );
+      } catch (err) {
+        log.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
   // When running inside GitHub Actions with no explicit subcommand, default to `pr`.
   // The action.yml runs this entry with inputs mapped to env vars but no argv
   // subcommand — without this shim the CLI would print --help and exit.
   const argv = [...process.argv];
   const inRunner = process.env.GITHUB_ACTIONS === 'true';
-  const hasSubcommand = argv.slice(2).some((a) => ['review', 'fix', 'pr', 'scan', 'help'].includes(a));
+  const hasSubcommand = argv.slice(2).some((a) => ['review', 'fix', 'pr', 'scan', 'help', 'benchmark', 'compare'].includes(a));
   if (inRunner && !hasSubcommand) {
     const mode = (process.env.INPUT_MODE ?? 'review').toLowerCase();
     argv.push('pr');

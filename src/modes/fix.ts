@@ -4,14 +4,17 @@ import { loadSkill, resolveSkillPath } from '../config/load.js';
 import { aggregate, severityBreakdown } from '../findings/aggregate.js';
 import { diffFindings } from '../findings/diff.js';
 import type { Finding, SeverityBreakdown } from '../findings/schema.js';
+import { SEVERITY_ORDER } from '../findings/schema.js';
 import { evaluateGates } from '../gates/evaluate.js';
 import { runReviewer, type ReviewerRunOutput } from '../roles/reviewer.js';
 import { runWriter, type WriterRunOutput } from '../roles/writer.js';
 import { runAllSast } from '../sast/index.js';
-import { normalizeFindingPaths, normalizeRelPath, readSourceTree } from '../util/files.js';
+import { normalizeFindingPaths, normalizeRelPath, readSourceTree, writeFileSafe } from '../util/files.js';
+import type { FileContent } from '../util/files.js';
 import { log } from '../util/logger.js';
 import { summarizeReviewHealth, type ReviewHealthStatus } from '../util/review-health.js';
 import { spinner } from '../util/spinner.js';
+import { resolve } from 'node:path';
 
 export interface FixModeInput {
   root: string;
@@ -61,6 +64,44 @@ export interface FixModeOutput {
   totalCostUSD: number;
   totalDurationMs: number;
   verification?: ReviewerRunOutput[];
+}
+
+// ---------------------------------------------------------------------------
+// Improvement 3: Snapshot / restore helpers
+// ---------------------------------------------------------------------------
+
+/** Capture a snapshot of file contents keyed by relPath. */
+export function snapshotFiles(files: FileContent[]): Map<string, string> {
+  const snap = new Map<string, string>();
+  for (const f of files) snap.set(f.relPath, f.content);
+  return snap;
+}
+
+/** Restore snapshotted files to disk using writeFileSafe. */
+export async function restoreSnapshot(root: string, snapshot: Map<string, string>): Promise<void> {
+  const rootAbs = resolve(root);
+  for (const [relPath, content] of snapshot) {
+    const target = resolve(rootAbs, relPath);
+    await writeFileSafe(target, content);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Improvement 7: Confidence / severity filtering helper
+// ---------------------------------------------------------------------------
+
+/** Filter findings down to those that meet the configured thresholds. */
+export function filterFindingsForWriter(
+  findings: Finding[],
+  minConfidence: number,
+  maxSeverityToFix: Finding['severity'],
+): Finding[] {
+  const minSeverityOrder = SEVERITY_ORDER[maxSeverityToFix];
+  return findings.filter((f) => {
+    if (f.confidence < minConfidence) return false;
+    if (SEVERITY_ORDER[f.severity] < minSeverityOrder) return false;
+    return true;
+  });
 }
 
 /**
@@ -162,6 +203,9 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
   let gateBlocked = false;
   let gateReasons: string[] = [];
   let consecutiveCleanIters = 0;
+  // Improvement 4: track finding counts for divergence detection
+  let prevFindingCount: number | null = null;
+  let divergenceStreak = 0;
 
   const initialGate = evaluateGates(
     {
@@ -185,112 +229,161 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
       const verifier = pickReviewer(reviewerInstances, i, config.fix.mode);
       log.header(`Iteration ${i + 1} — verifier: ${verifier.ref.name}`);
 
-    const findingsToFix = currentFindings;
-    const beforeFiles = await readSourceTree(root);
-    const sastBeforeRun = await runAllSast(root, config.sast);
-    const allowedFiles = new Set<string>([
-      ...beforeFiles.map((f) => normalizeRelPath(f.relPath)),
-      ...findingsToFix.map((f) => normalizeRelPath(f.file)),
-    ]);
+      const findingsToFix = currentFindings;
+      const beforeFiles = await readSourceTree(root);
+      // Improvement 3: snapshot files before writer runs so we can roll back
+      const preWriterSnapshot = snapshotFiles(beforeFiles);
+      const sastBeforeRun = await runAllSast(root, config.sast);
+      const allowedFiles = new Set<string>([
+        ...beforeFiles.map((f) => normalizeRelPath(f.relPath)),
+        ...findingsToFix.map((f) => normalizeRelPath(f.file)),
+      ]);
 
-    let writerRun: WriterRunOutput | undefined;
-    if (findingsToFix.length > 0) {
-      const wSpinner = spinner(
-        `Writer (${writer.ref.provider}/${writer.ref.model}) fixing ${findingsToFix.length} finding(s)`,
-      );
-      writerRun = await runWriter({
-        writer: writer.ref,
-        adapter: writer.adapter,
-        skill: writer.skill,
-        root,
-        files: beforeFiles,
-        findings: findingsToFix,
-        allowedFiles,
-      });
-      totalCost += writerRun.usage.costUSD;
-      writerRun.filesChanged.forEach((f) => allChangedFiles.add(f));
-      wSpinner.succeed(
-        `Writer changed ${writerRun.filesChanged.length} file(s) ($${writerRun.usage.costUSD.toFixed(3)})`,
-      );
-    } else {
-      log.info(`  Nothing to fix this iteration — ${verifier.ref.name} will confirm.`);
-    }
-
-    // Verifier audits whatever state we're in now (post-writer or unchanged).
-    const afterFiles = await readSourceTree(root);
-    const sastAfterRun = await runAllSast(root, config.sast);
-    const vSpinner = spinner(`Verifier ${verifier.ref.name} auditing post-fix code`);
-    const verifierRun = normalizeReviewerRun(
-      await runReviewer({
-        reviewer: verifier.ref,
-        adapter: verifier.adapter,
-        skill: verifier.skill,
-        files: afterFiles,
-        priorFindings: config.sast.inject_into_reviewer_context ? sastAfterRun.findings : undefined,
-      }),
-      root,
-    );
-    totalCost += verifierRun.usage.costUSD;
-    vSpinner.succeed(
-      `Verifier ${verifier.ref.name}: ${verifierRun.findings.length} finding${verifierRun.findings.length === 1 ? '' : 's'} ($${verifierRun.usage.costUSD.toFixed(3)})`,
-    );
-
-    const findingsAfter = aggregate([...verifierRun.findings, ...sastAfterRun.findings]);
-    const diff = diffFindings(findingsToFix, findingsAfter);
-    const newCritical = diff.introduced.filter((f) => f.severity === 'CRITICAL').length;
-
-    log.info(
-      `  ${verifier.ref.name} sees ${findingsAfter.length} finding(s) post-fix · resolved ${diff.resolved.length} · introduced ${diff.introduced.length} (${newCritical} CRITICAL)`,
-    );
-
-    iterations.push({
-      iteration: i + 1,
-      reviewer: verifier.ref.name,
-      reviewerRun: verifierRun,
-      sastBefore: summarizeSast(sastBeforeRun),
-      sastAfter: summarizeSast(sastAfterRun),
-      writerRun,
-      findingsBefore: findingsToFix,
-      findingsAfter,
-      newCritical,
-      resolved: diff.resolved.length,
-      costUSD: (writerRun?.usage.costUSD ?? 0) + verifierRun.usage.costUSD,
-    });
-
-    // Gates
-    const decision = evaluateGates(
-      {
-        beforeFindings: findingsToFix,
-        afterFindings: findingsAfter,
-        cumulativeCostUSD: totalCost,
-        elapsedMs: Date.now() - start,
-        iteration: i + 1,
-      },
-      config.gates,
-    );
-    if (!decision.proceed) {
-      log.warn(`Gate triggered — stopping loop: ${decision.reasons.join('; ')}`);
-      gateBlocked = true;
-      gateReasons = mergeGateReasons(gateReasons, decision.reasons);
-      currentFindings = findingsAfter;
-      break;
-    }
-
-    currentFindings = findingsAfter;
-
-    // Early exit: only when a FULL ROTATION of readers all see clean.
-    // Prevents a single lenient reader from prematurely ending the loop.
-    if (findingsAfter.length === 0) {
-      consecutiveCleanIters += 1;
-      if (consecutiveCleanIters >= N) {
-        log.success(
-          `Full rotation (${N} consecutive verifier${N === 1 ? '' : 's'}) reports clean — exiting early.`,
+      // Improvement 7: filter findings by confidence and severity thresholds
+      const minConf = config.fix.min_confidence_to_fix ?? 0;
+      const maxSev = config.fix.max_severity_to_fix ?? 'INFO';
+      const filteredFindingsToFix = filterFindingsForWriter(findingsToFix, minConf, maxSev);
+      const filteredOut = findingsToFix.length - filteredFindingsToFix.length;
+      if (filteredOut > 0) {
+        log.info(
+          `  Filtered ${filteredOut} low-confidence finding(s) from writer queue (min_confidence: ${minConf}, max_severity_to_fix: ${maxSev})`,
         );
+      }
+
+      let writerRun: WriterRunOutput | undefined;
+      if (filteredFindingsToFix.length > 0) {
+        const wSpinner = spinner(
+          `Writer (${writer.ref.provider}/${writer.ref.model}) fixing ${filteredFindingsToFix.length} finding(s)`,
+        );
+        writerRun = await runWriter({
+          writer: writer.ref,
+          adapter: writer.adapter,
+          skill: writer.skill,
+          root,
+          files: beforeFiles,
+          findings: filteredFindingsToFix,
+          allowedFiles,
+        });
+        totalCost += writerRun.usage.costUSD;
+        writerRun.filesChanged.forEach((f) => allChangedFiles.add(f));
+        wSpinner.succeed(
+          `Writer changed ${writerRun.filesChanged.length} file(s) ($${writerRun.usage.costUSD.toFixed(3)})`,
+        );
+      } else {
+        log.info(`  Nothing to fix this iteration — ${verifier.ref.name} will confirm.`);
+      }
+
+      // Verifier audits whatever state we're in now (post-writer or unchanged).
+      const afterFiles = await readSourceTree(root);
+      const sastAfterRun = await runAllSast(root, config.sast);
+      const vSpinner = spinner(`Verifier ${verifier.ref.name} auditing post-fix code`);
+      const verifierRun = normalizeReviewerRun(
+        await runReviewer({
+          reviewer: verifier.ref,
+          adapter: verifier.adapter,
+          skill: verifier.skill,
+          files: afterFiles,
+          priorFindings: config.sast.inject_into_reviewer_context ? sastAfterRun.findings : undefined,
+        }),
+        root,
+      );
+      totalCost += verifierRun.usage.costUSD;
+      vSpinner.succeed(
+        `Verifier ${verifier.ref.name}: ${verifierRun.findings.length} finding${verifierRun.findings.length === 1 ? '' : 's'} ($${verifierRun.usage.costUSD.toFixed(3)})`,
+      );
+
+      const findingsAfter = aggregate([...verifierRun.findings, ...sastAfterRun.findings]);
+      const diff = diffFindings(findingsToFix, findingsAfter);
+      const newCritical = diff.introduced.filter((f) => f.severity === 'CRITICAL').length;
+
+      log.info(
+        `  ${verifier.ref.name} sees ${findingsAfter.length} finding(s) post-fix · resolved ${diff.resolved.length} · introduced ${diff.introduced.length} (${newCritical} CRITICAL)`,
+      );
+
+      // Improvement 4: convergence detection — stop if findings grew 2 consecutive iters
+      const currentFindingCount = findingsAfter.length;
+      if (prevFindingCount !== null && currentFindingCount > prevFindingCount) {
+        divergenceStreak += 1;
+        if (divergenceStreak >= 2) {
+          log.warn(
+            'Divergence detected (findings grew 2 consecutive iterations) — stopping loop early to prevent regression',
+          );
+          iterations.push({
+            iteration: i + 1,
+            reviewer: verifier.ref.name,
+            reviewerRun: verifierRun,
+            sastBefore: summarizeSast(sastBeforeRun),
+            sastAfter: summarizeSast(sastAfterRun),
+            writerRun,
+            findingsBefore: findingsToFix,
+            findingsAfter,
+            newCritical,
+            resolved: diff.resolved.length,
+            costUSD: (writerRun?.usage.costUSD ?? 0) + verifierRun.usage.costUSD,
+          });
+          currentFindings = findingsAfter;
+          break;
+        }
+      } else {
+        divergenceStreak = 0;
+      }
+      prevFindingCount = currentFindingCount;
+
+      iterations.push({
+        iteration: i + 1,
+        reviewer: verifier.ref.name,
+        reviewerRun: verifierRun,
+        sastBefore: summarizeSast(sastBeforeRun),
+        sastAfter: summarizeSast(sastAfterRun),
+        writerRun,
+        findingsBefore: findingsToFix,
+        findingsAfter,
+        newCritical,
+        resolved: diff.resolved.length,
+        costUSD: (writerRun?.usage.costUSD ?? 0) + verifierRun.usage.costUSD,
+      });
+
+      // Gates
+      const decision = evaluateGates(
+        {
+          beforeFindings: findingsToFix,
+          afterFindings: findingsAfter,
+          cumulativeCostUSD: totalCost,
+          elapsedMs: Date.now() - start,
+          iteration: i + 1,
+        },
+        config.gates,
+      );
+      if (!decision.proceed) {
+        // Improvement 3: rollback if writer introduced new CRITICALs
+        if (newCritical > 0 && writerRun && writerRun.filesChanged.length > 0) {
+          log.warn('Writer introduced new CRITICAL(s) — rolling back to pre-iteration snapshot');
+          await restoreSnapshot(root, preWriterSnapshot);
+          currentFindings = findingsToFix;
+        } else {
+          currentFindings = findingsAfter;
+        }
+        log.warn(`Gate triggered — stopping loop: ${decision.reasons.join('; ')}`);
+        gateBlocked = true;
+        gateReasons = mergeGateReasons(gateReasons, decision.reasons);
         break;
       }
-    } else {
-      consecutiveCleanIters = 0;
-    }
+
+      currentFindings = findingsAfter;
+
+      // Early exit: only when a FULL ROTATION of readers all see clean.
+      // Prevents a single lenient reader from prematurely ending the loop.
+      if (findingsAfter.length === 0) {
+        consecutiveCleanIters += 1;
+        if (consecutiveCleanIters >= N) {
+          log.success(
+            `Full rotation (${N} consecutive verifier${N === 1 ? '' : 's'}) reports clean — exiting early.`,
+          );
+          break;
+        }
+      } else {
+        consecutiveCleanIters = 0;
+      }
     }
   }
 

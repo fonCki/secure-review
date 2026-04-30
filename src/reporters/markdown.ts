@@ -1,6 +1,7 @@
 import type { Finding, SeverityBreakdown } from '../findings/schema.js';
 import type { ReviewModeOutput } from '../modes/review.js';
 import type { FixModeOutput } from '../modes/fix.js';
+import { agreementCount } from '../findings/aggregate.js';
 
 export function renderReviewReport(output: ReviewModeOutput): string {
   const parts: string[] = [];
@@ -37,7 +38,8 @@ export function renderReviewReport(output: ReviewModeOutput): string {
   if (output.findings.length === 0) {
     parts.push('_No findings._');
   } else {
-    for (const f of output.findings) parts.push(renderFinding(f));
+    const sorted = sortByAgreement(output.findings);
+    for (const f of sorted) parts.push(renderFinding(f));
   }
 
   return parts.join('\n');
@@ -95,7 +97,8 @@ export function renderFixReport(output: FixModeOutput): string {
   if (output.finalFindings.length === 0) {
     parts.push('_All findings resolved._ 🎉');
   } else {
-    for (const f of output.finalFindings) parts.push(renderFinding(f));
+    const sorted = sortByAgreement(output.finalFindings);
+    for (const f of sorted) parts.push(renderFinding(f));
   }
 
   return parts.join('\n');
@@ -122,17 +125,30 @@ function reviewStatusLine(output: {
 function renderFinding(f: Finding): string {
   const reporters = f.reportedBy.join(', ');
   const tags = [f.cwe, f.owaspCategory].filter(Boolean).join(' · ');
+  const count = agreementCount(f);
+  const agreementBadge = count > 1 ? ` · ✅ confirmed by ${count} models` : '';
   return `
-### ${f.id} · **${f.severity}** · ${f.title}
+### ${f.id} · **${f.severity}** · ${f.title}${agreementBadge}
 
 - **File:** \`${f.file}:${f.lineStart}-${f.lineEnd}\`
 - **Tags:** ${tags || '—'}
-- **Reported by:** ${reporters}  (confidence: ${(f.confidence * 100).toFixed(0)}%)
+- **Reported by:** ${reporters}  (confidence: ${(f.confidence * 100).toFixed(0)}%, agreement: ${count}/${count > 0 ? Math.max(count, 1) : 1} model${count !== 1 ? 's' : ''})
 
 ${f.description}
 
 ${f.remediation ? `**Remediation:** ${f.remediation}` : ''}
 `;
+}
+
+/** Sort findings by agreement count (desc), then severity (desc). */
+function sortByAgreement(findings: Finding[]): Finding[] {
+  return [...findings].sort((a, b) => {
+    const cntDiff = agreementCount(b) - agreementCount(a);
+    if (cntDiff !== 0) return cntDiff;
+    // Secondary: severity order (higher severity first)
+    const SEV: Record<string, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, INFO: 0 };
+    return (SEV[b.severity] ?? 0) - (SEV[a.severity] ?? 0);
+  });
 }
 
 function breakdownTable(b: SeverityBreakdown): string {
