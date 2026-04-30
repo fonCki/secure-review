@@ -41,8 +41,7 @@ export function aggregate(findings: Finding[]): Finding[] {
 
 function bucketKey(f: Finding): string {
   const bucket = Math.floor(f.lineStart / 10);
-  const cwe = f.cwe ?? f.title.slice(0, 24).toLowerCase();
-  return `${f.file}::${bucket}::${cwe}`;
+  return `${f.file}::${bucket}`;
 }
 
 function mergeFindings(a: Finding, b: Finding): Finding {
