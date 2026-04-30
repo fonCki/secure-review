@@ -74,6 +74,13 @@ export const EvidenceJsonSchema = z.object({
   total_cost_usd: z.number().optional(),
   review_status: z.string(),
   failed_reviewers: z.array(z.string()),
+  /**
+   * Aggregated findings included for downstream tooling that needs the actual
+   * finding objects (e.g. `secure-review baseline reports/review-*.json`).
+   * Review mode writes the current review findings; fix mode writes final
+   * remaining findings after the loop.
+   */
+  findings: z.array(FindingSchema).optional(),
   // Extended fields for multi-reviewer runs
   reviewers: z.array(z.string()).optional(),
   iterations: z.number().int().optional(),

@@ -1,4 +1,3 @@
-/* eslint-disable no-console */
 import { setSpinnerQuiet } from './spinner.js';
 
 const COLORS = {

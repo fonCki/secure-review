@@ -397,7 +397,6 @@ describe('renderCompareReport', () => {
 // ---------------------------------------------------------------------------
 
 let _findingSequence: Array<Finding[]> = [];
-let _completeCalls = 0;
 
 function makeConfig(maxIterations: number): SecureReviewConfig {
   return {
@@ -436,7 +435,6 @@ describe('runFixMode divergence detection', () => {
         provider: 'openai',
         mode: 'api',
         complete: vi.fn(async (_input: CompleteInput): Promise<CompleteOutput> => {
-          _completeCalls += 1;
           const findings = _findingSequence.shift() ?? [];
           return {
             text: JSON.stringify({ findings }),
@@ -489,8 +487,6 @@ describe('runFixMode divergence detection', () => {
       // Verifier response iter 2: 3 findings (grew again 2 → 3, divergenceStreak = 2)
       [baseFinding, extraFinding1, extraFinding2],
     ];
-    _completeCalls = 0;
-
     const out = await runFixMode({
       root: '/repo',
       config: makeConfig(5),

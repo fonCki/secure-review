@@ -70,14 +70,22 @@ export declare const FixConfig: z.ZodObject<{
     mode: z.ZodDefault<z.ZodEnum<["sequential_rotation", "parallel_aggregate"]>>;
     max_iterations: z.ZodDefault<z.ZodNumber>;
     final_verification: z.ZodDefault<z.ZodEnum<["all_reviewers", "first_reviewer", "none"]>>;
+    /** Only send findings with confidence >= this threshold to the writer (0 = no filter). */
+    min_confidence_to_fix: z.ZodDefault<z.ZodNumber>;
+    /** Only send findings at or above this severity to the writer (default 'INFO' = all). */
+    min_severity_to_fix: z.ZodDefault<z.ZodEnum<["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]>>;
 }, "strip", z.ZodTypeAny, {
     mode: "sequential_rotation" | "parallel_aggregate";
     max_iterations: number;
     final_verification: "all_reviewers" | "first_reviewer" | "none";
+    min_confidence_to_fix: number;
+    min_severity_to_fix: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 }, {
     mode?: "sequential_rotation" | "parallel_aggregate" | undefined;
     max_iterations?: number | undefined;
     final_verification?: "all_reviewers" | "first_reviewer" | "none" | undefined;
+    min_confidence_to_fix?: number | undefined;
+    min_severity_to_fix?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO" | undefined;
 }>;
 export declare const GatesConfig: z.ZodObject<{
     block_on_new_critical: z.ZodDefault<z.ZodBoolean>;
@@ -130,6 +138,28 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         name?: string | undefined;
         maxTokens?: number | undefined;
     }>;
+    /** Optional list of additional writer models for benchmarking. */
+    writers: z.ZodOptional<z.ZodArray<z.ZodObject<{
+        provider: z.ZodEnum<["anthropic", "openai", "google"]>;
+        model: z.ZodString;
+        skill: z.ZodString;
+        /** Optional display name. Reviewers use `name`; writer infers from role. */
+        name: z.ZodOptional<z.ZodString>;
+        /** Optional cap per single invocation (tokens). */
+        maxTokens: z.ZodOptional<z.ZodNumber>;
+    }, "strip", z.ZodTypeAny, {
+        provider: "anthropic" | "openai" | "google";
+        model: string;
+        skill: string;
+        name?: string | undefined;
+        maxTokens?: number | undefined;
+    }, {
+        provider: "anthropic" | "openai" | "google";
+        model: string;
+        skill: string;
+        name?: string | undefined;
+        maxTokens?: number | undefined;
+    }>, "many">>;
     reviewers: z.ZodArray<z.ZodObject<{
         provider: z.ZodEnum<["anthropic", "openai", "google"]>;
         model: z.ZodString;
@@ -174,14 +204,22 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         mode: z.ZodDefault<z.ZodEnum<["sequential_rotation", "parallel_aggregate"]>>;
         max_iterations: z.ZodDefault<z.ZodNumber>;
         final_verification: z.ZodDefault<z.ZodEnum<["all_reviewers", "first_reviewer", "none"]>>;
+        /** Only send findings with confidence >= this threshold to the writer (0 = no filter). */
+        min_confidence_to_fix: z.ZodDefault<z.ZodNumber>;
+        /** Only send findings at or above this severity to the writer (default 'INFO' = all). */
+        min_severity_to_fix: z.ZodDefault<z.ZodEnum<["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]>>;
     }, "strip", z.ZodTypeAny, {
         mode: "sequential_rotation" | "parallel_aggregate";
         max_iterations: number;
         final_verification: "all_reviewers" | "first_reviewer" | "none";
+        min_confidence_to_fix: number;
+        min_severity_to_fix: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
     }, {
         mode?: "sequential_rotation" | "parallel_aggregate" | undefined;
         max_iterations?: number | undefined;
         final_verification?: "all_reviewers" | "first_reviewer" | "none" | undefined;
+        min_confidence_to_fix?: number | undefined;
+        min_severity_to_fix?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO" | undefined;
     }>>;
     gates: z.ZodDefault<z.ZodObject<{
         block_on_new_critical: z.ZodDefault<z.ZodBoolean>;
@@ -239,6 +277,8 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         mode: "sequential_rotation" | "parallel_aggregate";
         max_iterations: number;
         final_verification: "all_reviewers" | "first_reviewer" | "none";
+        min_confidence_to_fix: number;
+        min_severity_to_fix: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
     };
     gates: {
         block_on_new_critical: boolean;
@@ -251,6 +291,13 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         findings: string;
         diff: string;
     };
+    writers?: {
+        provider: "anthropic" | "openai" | "google";
+        model: string;
+        skill: string;
+        name?: string | undefined;
+        maxTokens?: number | undefined;
+    }[] | undefined;
 }, {
     writer: {
         provider: "anthropic" | "openai" | "google";
@@ -266,6 +313,13 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         name: string;
         maxTokens?: number | undefined;
     }[];
+    writers?: {
+        provider: "anthropic" | "openai" | "google";
+        model: string;
+        skill: string;
+        name?: string | undefined;
+        maxTokens?: number | undefined;
+    }[] | undefined;
     sast?: {
         enabled?: boolean | undefined;
         tools?: ("semgrep" | "eslint" | "npm_audit")[] | undefined;
@@ -278,6 +332,8 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         mode?: "sequential_rotation" | "parallel_aggregate" | undefined;
         max_iterations?: number | undefined;
         final_verification?: "all_reviewers" | "first_reviewer" | "none" | undefined;
+        min_confidence_to_fix?: number | undefined;
+        min_severity_to_fix?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO" | undefined;
     } | undefined;
     gates?: {
         block_on_new_critical?: boolean | undefined;
