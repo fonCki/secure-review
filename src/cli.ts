@@ -27,6 +27,14 @@ import { renderReviewReport, renderFixReport } from './reporters/markdown.js';
 import { renderReviewEvidence, renderFixEvidence } from './reporters/json.js';
 import { evaluatePrGates, postPrReview } from './reporters/github-pr.js';
 import { writeFileSafe, getGitChangedFiles } from './util/files.js';
+import {
+  DEFAULT_BASELINE_FILENAME,
+  baselineFromFindings,
+  loadBaseline,
+  mergeBaseline,
+  saveBaseline,
+} from './findings/baseline.js';
+import { FindingSchema, type Finding } from './findings/schema.js';
 import { log, setQuiet, setVerbose } from './util/logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -73,6 +81,35 @@ export function parseMaxCostUsd(raw: string): number {
 function applyMaxCostOverride(config: Awaited<ReturnType<typeof loadConfig>>['config'], value?: number): void {
   if (value === undefined) return;
   config.gates.max_cost_usd = value;
+}
+
+/**
+ * Resolve a baseline file path and load it, honoring the `--baseline` CLI flag:
+ *   --baseline <path>  → explicit path; error if file missing
+ *   --baseline none    → skip baseline entirely (sentinel value, in case the
+ *                        scan root has a stale .secure-review-baseline.json)
+ *   omitted            → auto-detect `.secure-review-baseline.json` in the
+ *                        scan root (silent no-op if absent)
+ */
+async function resolveBaseline(
+  scanRoot: string,
+  explicitPath: string | undefined,
+): Promise<{ baseline: Awaited<ReturnType<typeof loadBaseline>>; path?: string }> {
+  if (explicitPath === 'none') return { baseline: undefined };
+  if (explicitPath) {
+    const abs = resolve(explicitPath);
+    const baseline = await loadBaseline(abs);
+    if (!baseline) throw new Error(`Baseline file not found: ${abs}`);
+    log.info(`Baseline: loaded ${baseline.entries.length} accepted finding(s) from ${abs}`);
+    return { baseline, path: abs };
+  }
+  const auto = resolve(scanRoot, DEFAULT_BASELINE_FILENAME);
+  const baseline = await loadBaseline(auto);
+  if (baseline) {
+    log.info(`Baseline: loaded ${baseline.entries.length} accepted finding(s) from ${auto}`);
+    return { baseline, path: auto };
+  }
+  return { baseline: undefined };
 }
 
 function enforceReviewHealth(output: {
@@ -154,21 +191,65 @@ async function main(): Promise<void> {
     });
 
   program
+    .command('baseline')
+    .description('Create or update a baseline file from a previous review/fix findings JSON.')
+    .argument('<findings-json>', 'path to a review-*.json or fix-*.json findings file')
+    .option('-o, --out <file>', `output baseline file (default: ${DEFAULT_BASELINE_FILENAME} in CWD)`, DEFAULT_BASELINE_FILENAME)
+    .option('--reason <text>', 'rationale to record on each new entry (e.g. "test fixture")')
+    .option('--merge', 'merge into an existing baseline file instead of overwriting it (preserves prior reasons)', false)
+    .action(async (findingsJsonPath: string, opts: { out: string; reason?: string; merge: boolean }) => {
+      try {
+        const findingsAbs = resolve(findingsJsonPath);
+        const outAbs = resolve(opts.out);
+        const raw = JSON.parse(await readFile(findingsAbs, 'utf8')) as { findings?: unknown };
+        const findingsRaw = Array.isArray(raw.findings) ? raw.findings : Array.isArray(raw) ? raw : null;
+        if (!findingsRaw) {
+          throw new Error(
+            `Could not find a 'findings' array in ${findingsAbs}. Pass a review/fix findings JSON or a raw Finding[].`,
+          );
+        }
+        const findings: Finding[] = findingsRaw.map((f, i) => {
+          const parsed = FindingSchema.safeParse(f);
+          if (!parsed.success) {
+            throw new Error(`Entry #${i + 1} is not a valid Finding: ${parsed.error.message}`);
+          }
+          return parsed.data;
+        });
+        const existing = opts.merge ? await loadBaseline(outAbs) : undefined;
+        const next = existing
+          ? mergeBaseline(existing, findings, opts.reason)
+          : baselineFromFindings(findings, opts.reason);
+        await saveBaseline(outAbs, next);
+        const added = next.entries.length - (existing?.entries.length ?? 0);
+        log.success(`Baseline written: ${outAbs}`);
+        log.info(
+          `${next.entries.length} accepted finding(s) total${existing ? ` (+${added} new)` : ''}` +
+            (opts.reason ? ` · reason: "${opts.reason}"` : ''),
+        );
+      } catch (err) {
+        log.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
+  program
     .command('review')
     .description('Run multi-model review on a path. Posts no changes.')
     .argument('<path>', 'path to review')
     .option('-c, --config <file>', 'config file', '.secure-review.yml')
     .option('-o, --output-dir <dir>', 'output directory', './reports')
     .option('--since <ref>', 'only review files changed since this git ref (branch, commit, or tag)')
+    .option('--baseline <file|none>', `baseline file of accepted findings; pass 'none' to disable (default: auto-detect ${DEFAULT_BASELINE_FILENAME} in scan root)`)
     .option('--task-id <id>', 'task identifier for evidence JSON', 'unknown')
     .option('--run <n>', 'run number', '1')
-    .action(async (path: string, opts: { config: string; outputDir: string; since?: string; taskId: string; run: string }) => {
+    .action(async (path: string, opts: { config: string; outputDir: string; since?: string; baseline?: string; taskId: string; run: string }) => {
       try {
         const { config, configDir } = await loadConfig(opts.config);
         const env = loadEnv();
         const only = opts.since ? await getGitChangedFiles(resolve(path), opts.since) : undefined;
         if (only) log.info(`Incremental mode: ${only.size} file${only.size === 1 ? '' : 's'} changed since ${opts.since}`);
-        const output = await runReviewMode({ root: resolve(path), config, configDir, env, only });
+        const { baseline } = await resolveBaseline(resolve(path), opts.baseline);
+        const output = await runReviewMode({ root: resolve(path), config, configDir, env, only, baseline });
         enforceReviewHealth(output);
 
         const stamp = timestamp();
@@ -197,7 +278,10 @@ async function main(): Promise<void> {
 
         log.success(`Report:    ${mdPath}`);
         log.success(`Findings:  ${jsonPath}`);
-        log.info(`Total: ${output.findings.length} findings · $${output.totalCostUSD.toFixed(3)}`);
+        const baselineNote = output.baselineSuppressed.length > 0
+          ? ` · ${output.baselineSuppressed.length} baselined`
+          : '';
+        log.info(`Total: ${output.findings.length} findings${baselineNote} · $${output.totalCostUSD.toFixed(3)}`);
       } catch (err) {
         log.error(err instanceof Error ? err.message : String(err));
         process.exit(1);
@@ -211,6 +295,7 @@ async function main(): Promise<void> {
     .option('-c, --config <file>', 'config file', '.secure-review.yml')
     .option('-o, --output-dir <dir>', 'output directory', './reports')
     .option('--since <ref>', 'only review/fix files changed since this git ref (branch, commit, or tag)')
+    .option('--baseline <file|none>', `baseline file of accepted findings; pass 'none' to disable (default: auto-detect ${DEFAULT_BASELINE_FILENAME} in scan root)`)
     .option('--max-iterations <n>', 'override max iterations', parseMaxIterations)
     .option('--max-cost-usd <n>', 'override cost cap', parseMaxCostUsd)
     .option('--task-id <id>', 'task identifier for evidence JSON', 'unknown')
@@ -218,7 +303,7 @@ async function main(): Promise<void> {
     .action(
       async (
         path: string,
-        opts: { config: string; outputDir: string; since?: string; maxIterations?: number; maxCostUsd?: number; taskId: string; run: string },
+        opts: { config: string; outputDir: string; since?: string; baseline?: string; maxIterations?: number; maxCostUsd?: number; taskId: string; run: string },
       ) => {
         try {
           const { config, configDir } = await loadConfig(opts.config);
@@ -227,7 +312,8 @@ async function main(): Promise<void> {
           applyMaxCostOverride(config, opts.maxCostUsd);
           const only = opts.since ? await getGitChangedFiles(resolve(path), opts.since) : undefined;
           if (only) log.info(`Incremental mode: ${only.size} file${only.size === 1 ? '' : 's'} changed since ${opts.since}`);
-          const output = await runFixMode({ root: resolve(path), config, configDir, env, only });
+          const { baseline } = await resolveBaseline(resolve(path), opts.baseline);
+          const output = await runFixMode({ root: resolve(path), config, configDir, env, only, baseline });
           enforceReviewHealth(output);
 
           const stamp = timestamp();
@@ -265,8 +351,11 @@ async function main(): Promise<void> {
           log.success(`Report:    ${mdPath}`);
           log.success(`Findings:  ${jsonPath}`);
           log.success(`Diff:      ${diffPath}`);
+          const baselineNote = output.baselineSuppressed.length > 0
+            ? `  Baselined: ${output.baselineSuppressed.length}`
+            : '';
           log.info(
-            `Initial: ${output.initialFindings.length}  Final: ${output.finalFindings.length}  Resolved: ${evidence.findings_resolved} (${evidence.resolution_rate_pct}%)  Introduced: ${evidence.new_findings_introduced}  Cost: $${output.totalCostUSD.toFixed(3)}`,
+            `Initial: ${output.initialFindings.length}  Final: ${output.finalFindings.length}  Resolved: ${evidence.findings_resolved} (${evidence.resolution_rate_pct}%)  Introduced: ${evidence.new_findings_introduced}${baselineNote}  Cost: $${output.totalCostUSD.toFixed(3)}`,
           );
           if (output.gateBlocked) process.exit(2);
         } catch (err) {

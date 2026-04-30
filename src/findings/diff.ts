@@ -1,3 +1,4 @@
+import { findingFingerprint } from './identity.js';
 import type { Finding } from './schema.js';
 
 export interface FindingsDiff {
@@ -6,10 +7,18 @@ export interface FindingsDiff {
   introduced: Finding[];   // absent before, present after (regressions!)
 }
 
-/** Compare two Finding[] sets using the same bucket key as the aggregator. */
+/**
+ * Compare two Finding[] sets.
+ *
+ * Identity is the shared `findingFingerprint` (file + 10-line bucket) so the
+ * diff and aggregator always agree on what counts as "the same finding".
+ * Previously diff also keyed on CWE/title-prefix, which inflated the
+ * "introduced" count whenever models reported the same bug with a different
+ * label across iterations — see `findings/identity.ts` for the rationale.
+ */
 export function diffFindings(before: Finding[], after: Finding[]): FindingsDiff {
-  const beforeKeys = new Map(before.map((f) => [bucket(f), f]));
-  const afterKeys = new Map(after.map((f) => [bucket(f), f]));
+  const beforeKeys = new Map(before.map((f) => [findingFingerprint(f), f]));
+  const afterKeys = new Map(after.map((f) => [findingFingerprint(f), f]));
 
   const resolved: Finding[] = [];
   const remaining: Finding[] = [];
@@ -24,10 +33,4 @@ export function diffFindings(before: Finding[], after: Finding[]): FindingsDiff 
   }
 
   return { resolved, remaining, introduced };
-}
-
-function bucket(f: Finding): string {
-  const b = Math.floor(f.lineStart / 10);
-  const c = f.cwe ?? f.title.slice(0, 24).toLowerCase();
-  return `${f.file}::${b}::${c}`;
 }

@@ -1,3 +1,4 @@
+import { findingFingerprint } from './identity.js';
 import { SEVERITY_ORDER, type Finding, type SeverityBreakdown } from './schema.js';
 
 /**
@@ -43,8 +44,7 @@ export function aggregate(findings: Finding[]): Finding[] {
 }
 
 function bucketKey(f: Finding): string {
-  const bucket = Math.floor(f.lineStart / 10);
-  return `${f.file}::${bucket}`;
+  return findingFingerprint(f);
 }
 
 function mergeFindings(a: Finding, b: Finding): Finding {

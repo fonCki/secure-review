@@ -15,7 +15,8 @@ export function renderReviewReport(output: ReviewModeOutput): string {
   parts.push(`## Summary\n`);
   parts.push(breakdownTable(output.breakdown));
   parts.push('');
-  parts.push(`Total findings: **${output.findings.length}**\n`);
+  const suppressedCount = output.baselineSuppressed?.length ?? 0;
+  parts.push(`Total findings: **${output.findings.length}**${suppressedCount > 0 ? ` (+${suppressedCount} suppressed by baseline)` : ''}\n`);
 
   parts.push(`## Per-reviewer\n`);
   parts.push('| Reviewer | Findings | Cost (USD) | Duration | Status |');
@@ -68,6 +69,13 @@ export function renderFixReport(output: FixModeOutput): string {
   const finalTotal = output.finalFindings.length;
   parts.push(`| **Total** | **${initialTotal}** | **${finalTotal}** | **${finalTotal - initialTotal}** |`);
   parts.push('');
+  const fixSuppressedCount = output.baselineSuppressed?.length ?? 0;
+  if (fixSuppressedCount > 0) {
+    parts.push(
+      `> Baseline: ${fixSuppressedCount} accepted finding(s) suppressed at all phases (writer never saw them).`,
+    );
+    parts.push('');
+  }
 
   parts.push(`## Iterations\n`);
   if (output.iterations.length === 0) {
@@ -87,7 +95,8 @@ export function renderFixReport(output: FixModeOutput): string {
     );
     parts.push('');
 
-    // Per-iteration finding detail
+    // Per-iteration finding detail (uses stable IDs so the same bug shows up
+    // with the same `S-NNN` across iterations — see findings/identity.ts).
     for (const it of output.iterations) {
       const resolved = it.resolvedFindings ?? [];
       const introduced = it.introducedFindings ?? [];
@@ -95,16 +104,12 @@ export function renderFixReport(output: FixModeOutput): string {
       parts.push(`### Iteration ${it.iteration} detail\n`);
       if (resolved.length > 0) {
         parts.push(`**Resolved (${resolved.length}):**\n`);
-        for (const f of resolved) {
-          parts.push(`- ~~${f.severity}~~ \`${f.file}:${f.lineStart}\` — ${f.title}${f.cwe ? ` (${f.cwe})` : ''}`);
-        }
+        for (const f of resolved) parts.push(`- ${renderFindingDelta(f, 'resolved')}`);
         parts.push('');
       }
       if (introduced.length > 0) {
         parts.push(`**Introduced (${introduced.length}):**\n`);
-        for (const f of introduced) {
-          parts.push(`- **${f.severity}** \`${f.file}:${f.lineStart}\` — ${f.title}${f.cwe ? ` (${f.cwe})` : ''}`);
-        }
+        for (const f of introduced) parts.push(`- ${renderFindingDelta(f, 'introduced')}`);
         parts.push('');
       }
     }
@@ -151,8 +156,9 @@ function renderFinding(f: Finding): string {
   const tags = [f.cwe, f.owaspCategory].filter(Boolean).join(' · ');
   const count = agreementCount(f);
   const agreementBadge = count > 1 ? ` · ✅ confirmed by ${count} models` : '';
+  const stableTag = f.stableId ? ` [${f.stableId}]` : '';
   return `
-### ${f.id} · **${f.severity}** · ${f.title}${agreementBadge}
+### ${f.id}${stableTag} · **${f.severity}** · ${f.title}${agreementBadge}
 
 - **File:** \`${f.file}:${f.lineStart}-${f.lineEnd}\`
 - **Tags:** ${tags || '—'}
@@ -162,6 +168,14 @@ ${f.description}
 
 ${f.remediation ? `**Remediation:** ${f.remediation}` : ''}
 `;
+}
+
+/** Compact one-line view for the per-iteration resolved/introduced detail block. */
+function renderFindingDelta(f: Finding, kind: 'resolved' | 'introduced'): string {
+  const id = f.stableId ? `\`${f.stableId}\` ` : '';
+  const sev = kind === 'resolved' ? `~~${f.severity}~~` : `**${f.severity}**`;
+  const tag = f.cwe ? ` (${f.cwe})` : '';
+  return `${id}${sev} \`${f.file}:${f.lineStart}\` — ${f.title}${tag}`;
 }
 
 /** Sort findings by agreement count (desc), then severity (desc). */

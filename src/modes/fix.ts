@@ -2,7 +2,9 @@ import { getAdapter } from '../adapters/factory.js';
 import type { Env, SecureReviewConfig } from '../config/schema.js';
 import { loadSkill, resolveSkillPath } from '../config/load.js';
 import { aggregate, severityBreakdown } from '../findings/aggregate.js';
+import { applyBaseline, type Baseline } from '../findings/baseline.js';
 import { diffFindings } from '../findings/diff.js';
+import { FindingRegistry } from '../findings/identity.js';
 import type { Finding, SeverityBreakdown } from '../findings/schema.js';
 import { SEVERITY_ORDER } from '../findings/schema.js';
 import { evaluateGates } from '../gates/evaluate.js';
@@ -24,6 +26,8 @@ export interface FixModeInput {
   env: Env;
   /** If set, only files whose relPath is in this set are reviewed (incremental mode). */
   only?: Set<string>;
+  /** If set, findings whose fingerprint matches a baseline entry are suppressed. */
+  baseline?: Baseline;
 }
 
 /**
@@ -69,6 +73,8 @@ export interface FixModeOutput {
   totalCostUSD: number;
   totalDurationMs: number;
   verification?: ReviewerRunOutput[];
+  /** Findings suppressed by the baseline at any phase (initial + each iteration + final). */
+  baselineSuppressed: Finding[];
 }
 
 // ---------------------------------------------------------------------------
@@ -135,12 +141,27 @@ export function filterFindingsForWriter(
  *      still see issues.
  */
 export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
-  const { root, config, configDir, env, only } = input;
+  const { root, config, configDir, env, only, baseline } = input;
   const start = Date.now();
+
+  // Stable IDs across iterations: same bug → same `S-NNN` even when the
+  // verifier reports it with a slightly different line/title each time.
+  // Removes the "introduced is inflated by relabeling" failure mode.
+  const registry = new FindingRegistry();
+  const baselineSuppressedAll: Finding[] = [];
+  const seenSuppressedFingerprints = new Set<string>();
+  const collectSuppressed = (suppressed: Finding[]): void => {
+    for (const f of suppressed) {
+      const fp = `${f.file}::${Math.floor(f.lineStart / 10)}`;
+      if (seenSuppressedFingerprints.has(fp)) continue;
+      seenSuppressedFingerprints.add(fp);
+      baselineSuppressedAll.push(f);
+    }
+  };
 
   log.header(`Fix mode — ${root}${only ? ` (incremental: ${only.size} file${only.size === 1 ? '' : 's'})` : ''}`);
   log.info(
-    `Rotation: ${config.fix.mode} · max ${config.fix.max_iterations} iterations · ${config.reviewers.length} reviewers`,
+    `Rotation: ${config.fix.mode} · max ${config.fix.max_iterations} iterations · ${config.reviewers.length} reviewers${baseline ? ` · baseline: ${baseline.entries.length} accepted` : ''}`,
   );
 
   const reviewerInstances = await Promise.all(
@@ -195,10 +216,20 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
       `  initial-scan ${r.reviewer}: ${r.error ? 'FAILED' : `${r.findings.length} findings`} ($${r.usage.costUSD.toFixed(3)}, ${(r.durationMs / 1000).toFixed(1)}s)`,
     );
   }
-  const initialFindings = aggregate([
+  const initialAggregated = aggregate([
     ...initialReviewerRuns.flatMap((r) => r.findings),
     ...initialSast.findings,
   ]);
+  // Suppress baseline-accepted findings BEFORE the writer ever sees them —
+  // saves writer cost on issues the user has already triaged as known.
+  const initialFiltered = applyBaseline(initialAggregated, baseline);
+  collectSuppressed(initialFiltered.suppressed);
+  if (initialFiltered.suppressed.length > 0) {
+    log.info(
+      `Baseline: ${initialFiltered.suppressed.length} initial finding${initialFiltered.suppressed.length === 1 ? '' : 's'} suppressed`,
+    );
+  }
+  const initialFindings = registry.annotate(initialFiltered.kept);
 
   // FIX (0.5.0): count ALL initial reviewer costs, not just the first.
   let totalCost = initialReviewerRuns.reduce((s, r) => s + r.usage.costUSD, 0);
@@ -244,7 +275,7 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
       log.header(`Iteration ${i + 1} — verifier: ${verifier.ref.name}`);
 
       const findingsToFix = currentFindings;
-      const beforeFiles = await readSourceTree(root);
+      const beforeFiles = await readSourceTree(root, 200_000, only);
       // Improvement 3: snapshot files before writer runs so we can roll back
       const preWriterSnapshot = snapshotFiles(beforeFiles);
       const sastBeforeRun = await runAllSast(root, config.sast);
@@ -288,7 +319,7 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
       }
 
       // Verifier audits whatever state we're in now (post-writer or unchanged).
-      const afterFiles = await readSourceTree(root);
+      const afterFiles = await readSourceTree(root, 200_000, only);
       const sastAfterRun = await runAllSast(root, config.sast);
       const vSpinner = spinner(`Verifier ${verifier.ref.name} auditing post-fix code`);
       const verifierRun = normalizeReviewerRun(
@@ -306,7 +337,10 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
         `Verifier ${verifier.ref.name}: ${verifierRun.findings.length} finding${verifierRun.findings.length === 1 ? '' : 's'} ($${verifierRun.usage.costUSD.toFixed(3)})`,
       );
 
-      const findingsAfter = aggregate([...verifierRun.findings, ...sastAfterRun.findings]);
+      const findingsAfterAggregated = aggregate([...verifierRun.findings, ...sastAfterRun.findings]);
+      const afterFiltered = applyBaseline(findingsAfterAggregated, baseline);
+      collectSuppressed(afterFiltered.suppressed);
+      const findingsAfter = registry.annotate(afterFiltered.kept);
       const diff = diffFindings(findingsToFix, findingsAfter);
       const newCritical = diff.introduced.filter((f) => f.severity === 'CRITICAL').length;
 
@@ -426,7 +460,7 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
   }
   if (!gateBlocked && config.fix.final_verification !== 'none') {
     log.header('Final verification');
-    const finalFiles = await readSourceTree(root);
+    const finalFiles = await readSourceTree(root, 200_000, only);
     const finalSast = await runAllSast(root, config.sast);
     const verifiers =
       config.fix.final_verification === 'all_reviewers'
@@ -457,10 +491,13 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
     );
     finalSpinner.succeed(`Final verification complete: ${verifiers.length} reader${verifiers.length === 1 ? '' : 's'}`);
     for (const v of verification) totalCost += v.usage.costUSD;
-    const combined = aggregate([
+    const combinedAggregated = aggregate([
       ...verification.flatMap((v) => v.findings),
       ...finalSast.findings,
     ]);
+    const combinedFiltered = applyBaseline(combinedAggregated, baseline);
+    collectSuppressed(combinedFiltered.suppressed);
+    const combined = registry.annotate(combinedFiltered.kept);
     log.info(`Verification by ${verifiers.length} reviewer(s): ${combined.length} findings remaining`);
     const postFinalGate = evaluateGates(
       {
@@ -512,6 +549,7 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
     totalCostUSD: totalCost,
     totalDurationMs: Date.now() - start,
     verification,
+    baselineSuppressed: baselineSuppressedAll,
   };
 }
 

@@ -13,7 +13,14 @@ export const SEVERITY_ORDER: Record<Severity, number> = {
 
 /** A single vulnerability or concern reported by a reviewer. */
 export const FindingSchema = z.object({
-  id: z.string(), // e.g. "F-01"
+  id: z.string(), // e.g. "F-01" — assigned per-aggregate-call, NOT stable across iterations
+  /**
+   * Stable identity assigned by the session-wide `FindingRegistry` (e.g. "S-001").
+   * Same bug → same `stableId` across fix-loop iterations, even if the verifier
+   * reports it with a slightly different line or title. Optional: only populated
+   * by callers that have a registry (currently `runFixMode`).
+   */
+  stableId: z.string().optional(),
   severity: Severity,
   cwe: z.string().optional(), // e.g. "CWE-306"
   owaspCategory: z.string().optional(), // e.g. "A01:2025"
