@@ -21,6 +21,7 @@ import { renderReviewReport } from '../src/reporters/markdown.js';
 import { SecureReviewConfigSchema } from '../src/config/schema.js';
 import type { Finding } from '../src/findings/schema.js';
 import type { CompleteInput, CompleteOutput, ModelAdapter } from '../src/adapters/types.js';
+import type { SecureReviewConfig } from '../src/config/schema.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -159,6 +160,22 @@ describe('snapshotFiles / restoreSnapshot', () => {
     await restoreSnapshot(root, snap);
     expect(readFileSync(join(root, 'src/app.ts'), 'utf8')).toBe('original content');
   });
+
+  it('removes new files introduced after the snapshot', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'sr-snapshot-'));
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'src/app.ts'), 'original');
+
+    const snap = new Map<string, string>();
+    snap.set('src/app.ts', 'original');
+
+    // Writer introduces a new code file
+    writeFileSync(join(root, 'src/new.ts'), 'export const injected = 1;');
+    expect(readFileSync(join(root, 'src/new.ts'), 'utf8')).toContain('injected');
+
+    await restoreSnapshot(root, snap);
+    expect(() => readFileSync(join(root, 'src/new.ts'), 'utf8')).toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -187,7 +204,7 @@ describe('filterFindingsForWriter', () => {
   });
 
   it('filters out findings below the severity threshold', () => {
-    // max_severity_to_fix='HIGH' means only CRITICAL and HIGH are sent
+    // min_severity_to_fix='HIGH' means only CRITICAL and HIGH are sent
     const result = filterFindingsForWriter(findings, 0, 'HIGH');
     expect(result).toHaveLength(2);
     expect(result.every((f) => ['CRITICAL', 'HIGH'].includes(f.severity))).toBe(true);
@@ -219,15 +236,15 @@ describe('SecureReviewConfigSchema — fix config defaults', () => {
     expect(cfg.fix.min_confidence_to_fix).toBe(0);
   });
 
-  it('defaults max_severity_to_fix to INFO', () => {
+  it('defaults min_severity_to_fix to INFO', () => {
     const cfg = SecureReviewConfigSchema.parse({
       writer: { provider: 'anthropic', model: 'claude-sonnet-4-6', skill: 's' },
       reviewers: [{ name: 'a', provider: 'openai', model: 'gpt-5', skill: 'a' }],
     });
-    expect(cfg.fix.max_severity_to_fix).toBe('INFO');
+    expect(cfg.fix.min_severity_to_fix).toBe('INFO');
   });
 
-  it('accepts custom min_confidence_to_fix and max_severity_to_fix', () => {
+  it('accepts custom min_confidence_to_fix and min_severity_to_fix', () => {
     const cfg = SecureReviewConfigSchema.parse({
       writer: { provider: 'anthropic', model: 'claude-sonnet-4-6', skill: 's' },
       reviewers: [{ name: 'a', provider: 'openai', model: 'gpt-5', skill: 'a' }],
@@ -236,11 +253,11 @@ describe('SecureReviewConfigSchema — fix config defaults', () => {
         max_iterations: 3,
         final_verification: 'all_reviewers',
         min_confidence_to_fix: 0.6,
-        max_severity_to_fix: 'HIGH',
+        min_severity_to_fix: 'HIGH',
       },
     });
     expect(cfg.fix.min_confidence_to_fix).toBe(0.6);
-    expect(cfg.fix.max_severity_to_fix).toBe('HIGH');
+    expect(cfg.fix.min_severity_to_fix).toBe('HIGH');
   });
 
   it('supports optional writers array for benchmarking', () => {
@@ -379,54 +396,8 @@ describe('renderCompareReport', () => {
 // Improvement 4: divergence detection in runFixMode
 // ---------------------------------------------------------------------------
 
-// We need the mocked version of fix mode for this test
 let _findingSequence: Array<Finding[]> = [];
 let _completeCalls = 0;
-
-vi.mock('../src/adapters/factory.js', () => ({
-  getAdapter: vi.fn((): ModelAdapter => ({
-    provider: 'openai',
-    mode: 'api',
-    complete: vi.fn(async (_input: CompleteInput): Promise<CompleteOutput> => {
-      _completeCalls += 1;
-      // The current findings are set via _findingSequence
-      const findings = _findingSequence.shift() ?? [];
-      return {
-        text: JSON.stringify({ findings }),
-        usage: { inputTokens: 1, outputTokens: 1, costUSD: 0.01 },
-        durationMs: 1,
-      };
-    }),
-  })),
-}));
-
-vi.mock('../src/config/load.js', () => ({
-  loadSkill: vi.fn(async () => '# Skill'),
-  resolveSkillPath: vi.fn((s: string) => s),
-}));
-
-vi.mock('../src/sast/index.js', () => ({
-  runAllSast: vi.fn(async () => ({
-    findings: [],
-    semgrep: { ran: false, count: 0 },
-    eslint: { ran: false, count: 0 },
-    npmAudit: { ran: false, count: 0 },
-  })),
-}));
-
-vi.mock('../src/util/files.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../src/util/files.js')>();
-  return {
-    ...actual,
-    readSourceTree: vi.fn(async () => [
-      { path: '/repo/app.ts', relPath: 'app.ts', content: 'export const x = 1;', lines: 1 },
-    ]),
-  };
-});
-
-const { runFixMode } = await import('../src/modes/fix.js');
-
-import type { SecureReviewConfig } from '../src/config/schema.js';
 
 function makeConfig(maxIterations: number): SecureReviewConfig {
   return {
@@ -439,7 +410,7 @@ function makeConfig(maxIterations: number): SecureReviewConfig {
       max_iterations: maxIterations,
       final_verification: 'none',
       min_confidence_to_fix: 0,
-      max_severity_to_fix: 'INFO',
+      min_severity_to_fix: 'INFO',
     },
     gates: {
       block_on_new_critical: false,
@@ -457,6 +428,51 @@ function makeConfig(maxIterations: number): SecureReviewConfig {
 
 describe('runFixMode divergence detection', () => {
   it('stops early when findings grow in 2 consecutive iterations', async () => {
+    // These module mocks must be scoped to this test; vitest hoists `vi.mock`
+    // to the top of the file, which would otherwise affect unrelated tests.
+    vi.resetModules();
+    vi.doMock('../src/adapters/factory.js', () => ({
+      getAdapter: vi.fn((): ModelAdapter => ({
+        provider: 'openai',
+        mode: 'api',
+        complete: vi.fn(async (_input: CompleteInput): Promise<CompleteOutput> => {
+          _completeCalls += 1;
+          const findings = _findingSequence.shift() ?? [];
+          return {
+            text: JSON.stringify({ findings }),
+            usage: { inputTokens: 1, outputTokens: 1, costUSD: 0.01 },
+            durationMs: 1,
+          };
+        }),
+      })),
+    }));
+
+    vi.doMock('../src/config/load.js', () => ({
+      loadSkill: vi.fn(async () => '# Skill'),
+      resolveSkillPath: vi.fn((s: string) => s),
+    }));
+
+    vi.doMock('../src/sast/index.js', () => ({
+      runAllSast: vi.fn(async () => ({
+        findings: [],
+        semgrep: { ran: false, count: 0 },
+        eslint: { ran: false, count: 0 },
+        npmAudit: { ran: false, count: 0 },
+      })),
+    }));
+
+    vi.doMock('../src/util/files.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../src/util/files.js')>();
+      return {
+        ...actual,
+        readSourceTree: vi.fn(async () => [
+          { path: '/repo/app.ts', relPath: 'app.ts', content: 'export const x = 1;', lines: 1 },
+        ]),
+      };
+    });
+
+    const { runFixMode } = await import('../src/modes/fix.js');
+
     // Initial scan → 1 finding; iter1 post-fix → 2 findings; iter2 post-fix → 3 findings
     // divergenceStreak hits 2 after iter2 — loop exits
     const baseFinding = mkFinding({ cwe: 'CWE-001', lineStart: 0 });

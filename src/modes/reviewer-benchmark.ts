@@ -99,9 +99,11 @@ export async function runReviewerBenchmark(input: {
     const missedVsCombined = diffVsCombined.introduced; // in combined but not in single
 
     // Unique to this model = in this single run but not in any other single run
+    // Use provider+model as identity to avoid collisions if two reviewers share a name.
+    const instKey = `${inst.ref.provider}/${inst.ref.model}`;
     const otherFindings = aggregate([
       ...rawRuns
-        .filter(({ inst: other }) => other.ref.name !== inst.ref.name)
+        .filter(({ inst: other }) => `${other.ref.provider}/${other.ref.model}` !== instKey)
         .flatMap(({ result: r }) => normalizeFindingPaths(r.findings, root)),
       ...sastFindings,
     ]);
@@ -161,7 +163,14 @@ export function renderReviewerBenchmarkReport(output: ReviewerBenchmarkOutput): 
   parts.push('');
 
   // Agreement breakdown on combined findings
-  const byAgreement = [3, 2, 1].map((n) => ({
+  const maxAgreement = output.combinedFindings.reduce(
+    (m, f) => Math.max(m, agreementCount(f)),
+    0,
+  );
+  const thresholds = Array.from(new Set([maxAgreement, 3, 2, 1].filter((n) => n >= 1))).sort(
+    (a, b) => b - a,
+  );
+  const byAgreement = thresholds.map((n) => ({
     count: n,
     findings: output.combinedFindings.filter((f) => agreementCount(f) >= n),
   }));

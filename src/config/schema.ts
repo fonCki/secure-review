@@ -39,7 +39,7 @@ export const FixConfig = z.object({
   /** Only send findings with confidence >= this threshold to the writer (0 = no filter). */
   min_confidence_to_fix: z.number().min(0).max(1).default(0),
   /** Only send findings at or above this severity to the writer (default 'INFO' = all). */
-  max_severity_to_fix: z.enum(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']).default('INFO'),
+  min_severity_to_fix: z.enum(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']).default('INFO'),
 });
 
 export const GatesConfig = z.object({
@@ -71,7 +71,7 @@ export const SecureReviewConfigSchema = z.object({
     max_iterations: 3,
     final_verification: 'all_reviewers',
     min_confidence_to_fix: 0,
-    max_severity_to_fix: 'INFO',
+    min_severity_to_fix: 'INFO',
   }),
   gates: GatesConfig.default({
     block_on_new_critical: true,

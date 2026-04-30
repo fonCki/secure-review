@@ -15,6 +15,7 @@ import { log } from '../util/logger.js';
 import { summarizeReviewHealth, type ReviewHealthStatus } from '../util/review-health.js';
 import { spinner } from '../util/spinner.js';
 import { resolve } from 'node:path';
+import { rm } from 'node:fs/promises';
 
 export interface FixModeInput {
   root: string;
@@ -80,6 +81,14 @@ export function snapshotFiles(files: FileContent[]): Map<string, string> {
 /** Restore snapshotted files to disk using writeFileSafe. */
 export async function restoreSnapshot(root: string, snapshot: Map<string, string>): Promise<void> {
   const rootAbs = resolve(root);
+  // Best-effort cleanup: if the writer created new code files after the snapshot,
+  // remove them so rollback is complete (otherwise a malicious/buggy writer could
+  // leave behind additional executable code even after "restore").
+  const currentFiles = await readSourceTree(rootAbs);
+  for (const f of currentFiles) {
+    if (snapshot.has(f.relPath)) continue;
+    await rm(resolve(rootAbs, f.relPath), { force: true });
+  }
   for (const [relPath, content] of snapshot) {
     const target = resolve(rootAbs, relPath);
     await writeFileSafe(target, content);
@@ -94,9 +103,9 @@ export async function restoreSnapshot(root: string, snapshot: Map<string, string
 export function filterFindingsForWriter(
   findings: Finding[],
   minConfidence: number,
-  maxSeverityToFix: Finding['severity'],
+  minSeverityToFix: Finding['severity'],
 ): Finding[] {
-  const minSeverityOrder = SEVERITY_ORDER[maxSeverityToFix];
+  const minSeverityOrder = SEVERITY_ORDER[minSeverityToFix];
   return findings.filter((f) => {
     if (f.confidence < minConfidence) return false;
     if (SEVERITY_ORDER[f.severity] < minSeverityOrder) return false;
@@ -204,7 +213,8 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
   let gateReasons: string[] = [];
   let consecutiveCleanIters = 0;
   // Improvement 4: track finding counts for divergence detection
-  let prevFindingCount: number | null = null;
+  // Initialize to initialFindings.length so the first iteration's increase counts as streak 1.
+  let prevFindingCount = initialFindings.length;
   let divergenceStreak = 0;
 
   const initialGate = evaluateGates(
@@ -241,12 +251,12 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
 
       // Improvement 7: filter findings by confidence and severity thresholds
       const minConf = config.fix.min_confidence_to_fix ?? 0;
-      const maxSev = config.fix.max_severity_to_fix ?? 'INFO';
-      const filteredFindingsToFix = filterFindingsForWriter(findingsToFix, minConf, maxSev);
+      const minSev = config.fix.min_severity_to_fix ?? 'INFO';
+      const filteredFindingsToFix = filterFindingsForWriter(findingsToFix, minConf, minSev);
       const filteredOut = findingsToFix.length - filteredFindingsToFix.length;
       if (filteredOut > 0) {
         log.info(
-          `  Filtered ${filteredOut} low-confidence finding(s) from writer queue (min_confidence: ${minConf}, max_severity_to_fix: ${maxSev})`,
+          `  Filtered ${filteredOut} finding(s) from writer queue (min_confidence: ${minConf}, min_severity: ${minSev})`,
         );
       }
 
@@ -302,7 +312,7 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
 
       // Improvement 4: convergence detection — stop if findings grew 2 consecutive iters
       const currentFindingCount = findingsAfter.length;
-      if (prevFindingCount !== null && currentFindingCount > prevFindingCount) {
+      if (currentFindingCount > prevFindingCount) {
         divergenceStreak += 1;
         if (divergenceStreak >= 2) {
           log.warn(
