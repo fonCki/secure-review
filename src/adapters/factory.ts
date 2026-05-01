@@ -28,6 +28,7 @@ export function getAdapter(spec: AdapterSpec, env: Env): ModelAdapter {
       if (mode === 'cli') return new AnthropicCLIAdapter(spec.model, env.CLAUDE_CLI_BIN);
       const key = env.ANTHROPIC_API_KEY;
       if (!key) throw new Error('ANTHROPIC_API_KEY is not set');
+      if (key.length < 8) throw new Error('ANTHROPIC_API_KEY appears invalid');
       return new AnthropicAPIAdapter(spec.model, key);
     }
     case 'openai': {
@@ -36,12 +37,14 @@ export function getAdapter(spec: AdapterSpec, env: Env): ModelAdapter {
       }
       const key = env.OPENAI_API_KEY;
       if (!key) throw new Error('OPENAI_API_KEY is not set');
+      if (key.length < 8) throw new Error('OPENAI_API_KEY appears invalid');
       return new OpenAIAPIAdapter(spec.model, key);
     }
     case 'google': {
       if (mode === 'cli') return new GoogleCLIAdapter(spec.model, env.GEMINI_CLI_BIN);
       const key = env.GOOGLE_API_KEY;
       if (!key) throw new Error('GOOGLE_API_KEY is not set');
+      if (key.length < 8) throw new Error('GOOGLE_API_KEY appears invalid');
       return new GoogleAPIAdapter(spec.model, key);
     }
     default: {

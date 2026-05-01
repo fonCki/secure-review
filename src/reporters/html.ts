@@ -95,6 +95,7 @@ export function renderFixHtml(output: FixModeOutput): string {
     }),
     beforeAfterSection(output.initialBreakdown, output.finalBreakdown, output.initialFindings.length, output.finalFindings.length),
     iterationsSection(output.iterations),
+    runtimeAttacksSection(output),
     filesChangedSection(output.filesChanged),
     findingsSection(output.finalFindings, 'Remaining findings'),
   ].join('\n');
@@ -350,6 +351,37 @@ function filesChangedSection(files: string[]): string {
   </section>`;
 }
 
+function runtimeAttacksSection(output: FixModeOutput): string {
+  if (!output.runtimeAttacks || output.runtimeAttacks.length === 0) return '';
+  const rows = output.runtimeAttacks
+    .map((phase) => {
+      const o = phase.output;
+      const confirmed = o.probes.filter((p) => p.confirmed).length;
+      return `<tr>
+        <td><code>${escapeHtml(phase.phase)}</code></td>
+        <td><code>${escapeHtml(o.targetUrl)}</code></td>
+        <td class="num">${o.pages.length}</td>
+        <td class="num">${o.hypotheses.length}</td>
+        <td class="num">${confirmed}/${o.probes.length}</td>
+        <td class="num ${o.findings.length > 0 ? 'bad' : 'flat'}">${o.findings.length}</td>
+        <td class="num">$${o.totalCostUSD.toFixed(3)}</td>
+      </tr>`;
+    })
+    .join('\n');
+  const initial = output.initialRuntimeFindings?.length ?? 0;
+  const final = output.finalRuntimeFindings?.length ?? initial;
+  const delta = final - initial;
+  const deltaCls = delta < 0 ? 'good' : delta > 0 ? 'bad' : 'flat';
+  return `<section class="card pad">
+    <h2>Runtime attack phases (attack-ai)</h2>
+    <table>
+      <thead><tr><th>Phase</th><th>Target</th><th>Pages</th><th>Hypotheses</th><th>Probes (confirmed/total)</th><th>Findings</th><th>Cost</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="muted small">Runtime delta: <strong class="${deltaCls}">${initial} → ${final}</strong> confirmed runtime finding${final === 1 ? '' : 's'}.</p>
+  </section>`;
+}
+
 function findingsSection(findings: Finding[], heading = 'Findings'): string {
   return `<section class="card pad findings-section">
     <div class="findings-head">
@@ -441,8 +473,8 @@ code { font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Conso
 .brand .logo { color: var(--accent); font-size: 1.3rem; }
 .brand-sub { color: var(--muted); font-size: 0.85rem; font-variant-numeric: tabular-nums; }
 main { max-width: 1100px; margin: 1.5rem auto; padding: 0 1.5rem; display: flex; flex-direction: column; gap: 1.25rem; }
-section.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.75rem; }
-.card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); }
+section.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.75rem; align-items: stretch; }
+.card { min-width: 0; background: var(--card); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); }
 .card.pad { padding: 1.1rem 1.25rem; }
 .card.stat { padding: 0.9rem 1rem 0.85rem; }
 .stat-label { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
@@ -452,8 +484,9 @@ section.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170
 .small { font-size: 0.82rem; font-weight: 400; }
 .card.warn .stat-value { color: var(--bad); }
 .card.ok .stat-value { color: var(--good); }
-.breakdown .bars { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.35rem; margin-top: 0.5rem; }
-.bar { background: rgb(127 127 127 / 6%); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.45rem; text-align: center; }
+.breakdown { grid-column: span 2; }
+.breakdown .bars { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.35rem; margin-top: 0.5rem; }
+.bar { min-width: 0; background: rgb(127 127 127 / 6%); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.3rem; text-align: center; }
 .bar-label { display: block; font-size: 0.7rem; letter-spacing: 0.04em; color: var(--muted); text-transform: uppercase; }
 .bar-count { display: block; font-size: 1.1rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 .bar-critical .bar-count, .bar-critical .bar-label { color: var(--crit); }
@@ -522,6 +555,8 @@ details.finding > summary::-webkit-details-marker { display: none; }
 .filelist li { break-inside: avoid; }
 .foot { text-align: center; color: var(--muted); font-size: 0.82rem; margin-top: 1.5rem; }
 @media (max-width: 720px) {
+  .breakdown { grid-column: 1 / -1; }
+  .breakdown .bars { grid-template-columns: repeat(auto-fit, minmax(4.75rem, 1fr)); }
   details.finding > summary { grid-template-columns: auto 1fr auto; }
   .meta, .stable-id { display: none; }
   .filters input { min-width: 0; flex: 1; }

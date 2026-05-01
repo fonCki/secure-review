@@ -86,6 +86,8 @@ describe('SecureReviewConfigSchema', () => {
     expect(parsed.fix.max_iterations).toBe(3);
     expect(parsed.gates.max_cost_usd).toBe(20);
     expect(parsed.sast.enabled).toBe(true);
+    expect(parsed.dynamic.enabled).toBe(false);
+    expect(parsed.dynamic.checks).toContain('headers');
   });
 
   it('rejects empty reviewers', () => {
@@ -95,6 +97,20 @@ describe('SecureReviewConfigSchema', () => {
         reviewers: [],
       }),
     ).toThrow();
+  });
+
+  it('accepts dynamic.auth_headers', () => {
+    const parsed = SecureReviewConfigSchema.parse({
+      writer: { provider: 'anthropic', model: 'x', skill: 's' },
+      reviewers: [{ name: 'a', provider: 'openai', model: 'gpt-5', skill: 'skills/a.md' }],
+      dynamic: {
+        auth_headers: {
+          Cookie: 'session=test',
+          Authorization: 'Bearer token',
+        },
+      },
+    });
+    expect(parsed.dynamic.auth_headers?.Cookie).toBe('session=test');
   });
 });
 

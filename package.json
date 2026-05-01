@@ -55,7 +55,9 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src test",
-    "clean": "rm -rf dist dist-action coverage"
+    "clean": "rm -rf dist dist-action coverage",
+    "test:attack-loop": "vitest run test/attack-review-loop-live-apps.test.ts",
+    "secure-review": "node dist/cli.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.33.0",

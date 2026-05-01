@@ -15,7 +15,7 @@ vi.mock('@octokit/rest', () => ({
   })),
 }));
 
-const { evaluatePrGates, postPrReview } = await import('../src/reporters/github-pr.js');
+const { evaluatePrGates, evaluateRuntimePrGate, postPrReview } = await import('../src/reporters/github-pr.js');
 
 function finding(overrides: Partial<Finding> = {}): Finding {
   return {
@@ -93,6 +93,26 @@ function gates(overrides = {}) {
     ...overrides,
   };
 }
+
+describe('evaluateRuntimePrGate', () => {
+  it('blocks when dynamic gate fires on scanner-style findings', () => {
+    const d = evaluateRuntimePrGate(
+      [finding({ severity: 'HIGH', lineStart: 0, lineEnd: 0, file: 'https://demo.example/', id: 'N-001' })],
+      { block_on_confirmed_critical: false, block_on_confirmed_high: true },
+    );
+    expect(d.blocked).toBe(true);
+    expect(d.reasons[0]).toContain('HIGH');
+  });
+
+  it('allows clean aggregated runtime set', () => {
+    expect(
+      evaluateRuntimePrGate(
+        [finding({ severity: 'MEDIUM', lineStart: 0, lineEnd: 0 })],
+        { block_on_confirmed_critical: true, block_on_confirmed_high: false },
+      ).blocked,
+    ).toBe(false);
+  });
+});
 
 describe('evaluatePrGates', () => {
   it('blocks high findings when block_on_new_high is enabled', () => {

@@ -2,6 +2,8 @@ import type { Finding, SeverityBreakdown } from '../findings/schema.js';
 import { SEVERITY_ORDER } from '../findings/schema.js';
 import type { ReviewModeOutput } from '../modes/review.js';
 import type { FixModeOutput } from '../modes/fix.js';
+import type { AttackModeOutput } from '../modes/attack.js';
+import type { AttackAiModeOutput } from '../modes/attack-ai.js';
 import { agreementCount } from '../findings/aggregate.js';
 
 export function renderReviewReport(output: ReviewModeOutput): string {
@@ -116,6 +118,24 @@ export function renderFixReport(output: FixModeOutput): string {
   }
   parts.push('');
 
+  if (output.runtimeAttacks && output.runtimeAttacks.length > 0) {
+    parts.push(`## Runtime Attack Phases (attack-ai)\n`);
+    parts.push('| Phase | Target | Pages | Hypotheses | Probes (confirmed/total) | Findings | Cost |');
+    parts.push('|---|---|---:|---:|---:|---:|---:|');
+    for (const phase of output.runtimeAttacks) {
+      const o = phase.output;
+      const confirmed = o.probes.filter((p) => p.confirmed).length;
+      parts.push(
+        `| ${phase.phase} | \`${o.targetUrl}\` | ${o.pages.length} | ${o.hypotheses.length} | ${confirmed}/${o.probes.length} | ${o.findings.length} | $${o.totalCostUSD.toFixed(3)} |`,
+      );
+    }
+    const initial = output.initialRuntimeFindings?.length ?? 0;
+    const final = output.finalRuntimeFindings?.length ?? initial;
+    parts.push('');
+    parts.push(`Runtime delta: **${initial} → ${final}** confirmed finding${final === 1 ? '' : 's'}.`);
+    parts.push('');
+  }
+
   if (output.filesChanged.length) {
     parts.push(`## Files Changed\n`);
     for (const f of output.filesChanged) parts.push(`- \`${f}\``);
@@ -127,6 +147,92 @@ export function renderFixReport(output: FixModeOutput): string {
     parts.push('_All findings resolved._ 🎉');
   } else {
     const sorted = sortByAgreement(output.finalFindings);
+    for (const f of sorted) parts.push(renderFinding(f));
+  }
+
+  return parts.join('\n');
+}
+
+export function renderAttackReport(output: AttackModeOutput): string {
+  const parts: string[] = [];
+  parts.push(`# Secure Review — Runtime Attack Report`);
+  parts.push(`\nGenerated: ${new Date().toISOString()}`);
+  parts.push(`Target: ${output.targetUrl}`);
+  parts.push(`Duration: ${(output.totalDurationMs / 1000).toFixed(1)}s`);
+  parts.push(`Gate blocked: ${output.gateBlocked ? 'YES' : 'no'}`);
+  if (output.gateReasons.length) parts.push(`Reasons: ${output.gateReasons.join('; ')}`);
+  parts.push('');
+
+  parts.push(`## Summary\n`);
+  parts.push(breakdownTable(output.breakdown));
+  parts.push('');
+  parts.push(`Total runtime findings: **${output.findings.length}**\n`);
+
+  parts.push(`## Checks\n`);
+  parts.push('| Check | URL | Status | OK | Duration | Error |');
+  parts.push('|---|---|---:|---|---:|---|');
+  for (const c of output.checks) {
+    parts.push(
+      `| ${c.check} | \`${c.url}\` | ${c.status ?? ''} | ${c.ok ? 'yes' : 'no'} | ${(c.durationMs / 1000).toFixed(1)}s | ${c.error ?? ''} |`,
+    );
+  }
+  parts.push('');
+
+  parts.push(`## Runtime Findings\n`);
+  if (output.findings.length === 0) {
+    parts.push('_No runtime findings._');
+  } else {
+    const sorted = sortByAgreement(output.findings);
+    for (const f of sorted) parts.push(renderFinding(f));
+  }
+
+  return parts.join('\n');
+}
+
+export function renderAttackAiReport(output: AttackAiModeOutput): string {
+  const parts: string[] = [];
+  parts.push(`# Secure Review — AI Attack Simulation Report`);
+  parts.push(`\nGenerated: ${new Date().toISOString()}`);
+  parts.push(`Target: ${output.targetUrl}`);
+  parts.push(
+    `Attacker: **${output.attacker.provider}** / \`${output.attacker.model}\` · skill: \`${output.attacker.skillPath}\``,
+  );
+  parts.push(`Duration: ${(output.totalDurationMs / 1000).toFixed(1)}s`);
+  parts.push(`Cost: $${output.totalCostUSD.toFixed(3)}`);
+  parts.push(`Gate blocked: ${output.gateBlocked ? 'YES' : 'no'}`);
+  if (output.gateReasons.length) parts.push(`Reasons: ${output.gateReasons.join('; ')}`);
+  parts.push('');
+
+  parts.push(`## Summary\n`);
+  parts.push(breakdownTable(output.breakdown));
+  parts.push('');
+  parts.push(`Crawled pages: **${output.pages.length}**`);
+  parts.push(`Hypotheses planned: **${output.hypotheses.length}**`);
+  parts.push(`Safe probes executed: **${output.probes.length}**`);
+  parts.push(`Confirmed findings: **${output.findings.length}**\n`);
+
+  parts.push(`## Safety Limits\n`);
+  parts.push(`- Same-origin requests only`);
+  parts.push(`- Max requests: ${output.limits.maxRequests}`);
+  parts.push(`- Max crawl pages: ${output.limits.maxCrawlPages}`);
+  parts.push(`- Rate limit: ${output.limits.rateLimitPerSecond}/second`);
+  parts.push('');
+
+  parts.push(`## Probes\n`);
+  parts.push('| Hypothesis | Category | Method | URL | Status | Confirmed | Error |');
+  parts.push('|---|---|---|---|---:|---|---|');
+  for (const p of output.probes) {
+    parts.push(
+      `| ${p.hypothesisId} | ${p.category} | ${p.method} | \`${p.url}\` | ${p.status ?? ''} | ${p.confirmed ? 'yes' : 'no'} | ${p.error ?? ''} |`,
+    );
+  }
+  parts.push('');
+
+  parts.push(`## Confirmed Findings\n`);
+  if (output.findings.length === 0) {
+    parts.push('_No AI-planned probes produced confirmed runtime evidence._');
+  } else {
+    const sorted = sortByAgreement(output.findings);
     for (const f of sorted) parts.push(renderFinding(f));
   }
 

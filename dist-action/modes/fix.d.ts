@@ -1,10 +1,40 @@
-import type { Env, SecureReviewConfig } from '../config/schema.js';
+import type { ModelAdapter } from '../adapters/types.js';
+import type { Env, ModelRef, SecureReviewConfig } from '../config/schema.js';
 import { type Baseline } from '../findings/baseline.js';
 import type { Finding, SeverityBreakdown } from '../findings/schema.js';
 import { type ReviewerRunOutput } from '../roles/reviewer.js';
 import { type WriterRunOutput } from '../roles/writer.js';
 import type { FileContent } from '../util/files.js';
 import { type ReviewHealthStatus } from '../util/review-health.js';
+import { type AttackAiModeOutput } from './attack-ai.js';
+export type AttackCadence = 'bookend' | 'every';
+export interface AttackAiHookConfig {
+    /** Live target URL the attacker model probes. Required to enable attack phases. */
+    targetUrl: string;
+    /** When to run attack-ai relative to the fix loop. Default: bookend. */
+    cadence: AttackCadence;
+    timeoutSeconds?: number;
+    maxRequests?: number;
+    maxCrawlPages?: number;
+    rateLimitPerSecond?: number;
+    /** Optional preconstructed adapter (test seam). */
+    attackerAdapter?: ModelAdapter;
+    /** Optional preloaded skill prompt (test seam). */
+    attackerSkill?: string;
+    /** Override attacker provider (merged onto `dynamic.attacker` or writer). */
+    attackerProvider?: ModelRef['provider'];
+    /** Override attacker model id. */
+    attackerModel?: string;
+    /** Override skill path (relative to config dir or absolute). */
+    attackerSkillPath?: string;
+    /** Runtime probe headers (merged over `dynamic.auth_headers`). */
+    authHeaders?: Record<string, string>;
+}
+export interface RuntimeAttackPhase {
+    /** Phase identifier — 'initial', 'iteration-N' (1-based), or 'final'. */
+    phase: string;
+    output: AttackAiModeOutput;
+}
 export interface FixModeInput {
     root: string;
     config: SecureReviewConfig;
@@ -14,6 +44,8 @@ export interface FixModeInput {
     only?: Set<string>;
     /** If set, findings whose fingerprint matches a baseline entry are suppressed. */
     baseline?: Baseline;
+    /** If set, attack-ai runs alongside the static loop and feeds the writer. */
+    attack?: AttackAiHookConfig;
 }
 /**
  * One iteration of the rotating fix loop.
@@ -49,6 +81,10 @@ export interface IterationRecord {
     newCritical: number;
     resolved: number;
     costUSD: number;
+    /** Runtime findings the attacker confirmed during this iteration (if attack ran). */
+    runtimeFindings?: Finding[];
+    /** Phase identifier of the attack run captured for this iteration, if any. */
+    runtimeAttackPhase?: string;
 }
 export interface FixModeOutput {
     initialFindings: Finding[];
@@ -67,6 +103,12 @@ export interface FixModeOutput {
     verification?: ReviewerRunOutput[];
     /** Findings suppressed by the baseline at any phase (initial + each iteration + final). */
     baselineSuppressed: Finding[];
+    /** Per-phase attack-ai runs (initial / each iteration / final) when attack hook is enabled. */
+    runtimeAttacks?: RuntimeAttackPhase[];
+    /** Confirmed runtime findings observed in the initial attack phase. */
+    initialRuntimeFindings?: Finding[];
+    /** Confirmed runtime findings observed in the final attack phase. */
+    finalRuntimeFindings?: Finding[];
 }
 /** Capture a snapshot of file contents keyed by relPath. */
 export declare function snapshotFiles(files: FileContent[]): Map<string, string>;

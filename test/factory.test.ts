@@ -6,7 +6,7 @@ import { AnthropicCLIAdapter } from '../src/adapters/anthropic-cli.js';
 
 describe('factory', () => {
   it('selects API adapter by default', () => {
-    const env = EnvSchema.parse({ ANTHROPIC_API_KEY: 'x' });
+    const env = EnvSchema.parse({ ANTHROPIC_API_KEY: '12345678' });
     const adapter = getAdapter({ provider: 'anthropic', model: 'claude-sonnet-4-6' }, env);
     expect(adapter).toBeInstanceOf(AnthropicAPIAdapter);
     expect(adapter.mode).toBe('api');

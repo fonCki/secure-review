@@ -50,6 +50,15 @@ gates:
   max_cost_usd: 20
   max_wall_time_minutes: 15
 
+dynamic:
+  max_requests: 50
+  rate_limit_per_second: 2
+  max_crawl_pages: 20
+  attacker:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    skill: ../skills/authorized-attack-simulator.md
+
 output:
   report: ./reports/report-{timestamp}.md
   findings: ./reports/findings-{timestamp}.json

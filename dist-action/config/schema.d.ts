@@ -33,16 +33,16 @@ export declare const ReviewerRef: z.ZodObject<{
 } & {
     name: z.ZodString;
 }, "strip", z.ZodTypeAny, {
+    name: string;
     provider: "anthropic" | "openai" | "google";
     model: string;
     skill: string;
-    name: string;
     maxTokens?: number | undefined;
 }, {
+    name: string;
     provider: "anthropic" | "openai" | "google";
     model: string;
     skill: string;
-    name: string;
     maxTokens?: number | undefined;
 }>;
 export type ReviewerRef = z.infer<typeof ReviewerRef>;
@@ -103,6 +103,102 @@ export declare const GatesConfig: z.ZodObject<{
     max_cost_usd?: number | undefined;
     max_wall_time_minutes?: number | undefined;
 }>;
+export declare const DynamicCheck: z.ZodEnum<["headers", "cookies", "cors", "sensitive_paths"]>;
+export type DynamicCheck = z.infer<typeof DynamicCheck>;
+export declare const DynamicConfig: z.ZodObject<{
+    enabled: z.ZodDefault<z.ZodBoolean>;
+    /** Optional runtime target. Can also be supplied with `secure-review attack --target-url`. */
+    target_url: z.ZodOptional<z.ZodString>;
+    healthcheck_url: z.ZodOptional<z.ZodString>;
+    timeout_seconds: z.ZodDefault<z.ZodNumber>;
+    max_requests: z.ZodDefault<z.ZodNumber>;
+    rate_limit_per_second: z.ZodDefault<z.ZodNumber>;
+    max_crawl_pages: z.ZodDefault<z.ZodNumber>;
+    attacker: z.ZodOptional<z.ZodObject<{
+        provider: z.ZodEnum<["anthropic", "openai", "google"]>;
+        model: z.ZodString;
+        skill: z.ZodString;
+        /** Optional display name. Reviewers use `name`; writer infers from role. */
+        name: z.ZodOptional<z.ZodString>;
+        /** Optional cap per single invocation (tokens). */
+        maxTokens: z.ZodOptional<z.ZodNumber>;
+    }, "strip", z.ZodTypeAny, {
+        provider: "anthropic" | "openai" | "google";
+        model: string;
+        skill: string;
+        name?: string | undefined;
+        maxTokens?: number | undefined;
+    }, {
+        provider: "anthropic" | "openai" | "google";
+        model: string;
+        skill: string;
+        name?: string | undefined;
+        maxTokens?: number | undefined;
+    }>>;
+    checks: z.ZodDefault<z.ZodArray<z.ZodEnum<["headers", "cookies", "cors", "sensitive_paths"]>, "many">>;
+    sensitive_paths: z.ZodDefault<z.ZodArray<z.ZodString, "many">>;
+    gates: z.ZodDefault<z.ZodObject<{
+        block_on_confirmed_critical: z.ZodDefault<z.ZodBoolean>;
+        block_on_confirmed_high: z.ZodDefault<z.ZodBoolean>;
+    }, "strip", z.ZodTypeAny, {
+        block_on_confirmed_critical: boolean;
+        block_on_confirmed_high: boolean;
+    }, {
+        block_on_confirmed_critical?: boolean | undefined;
+        block_on_confirmed_high?: boolean | undefined;
+    }>>;
+    /**
+     * Extra request headers on every Layer 4 HTTP request (`attack`, `attack-ai`, fix + attack-ai).
+     * Use for session cookies or Bearer tokens so probes hit authenticated routes.
+     * Prefer CI secrets or a gitignored overlay — do not commit real credentials.
+     */
+    auth_headers: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+}, "strip", z.ZodTypeAny, {
+    sensitive_paths: string[];
+    enabled: boolean;
+    gates: {
+        block_on_confirmed_critical: boolean;
+        block_on_confirmed_high: boolean;
+    };
+    timeout_seconds: number;
+    max_requests: number;
+    rate_limit_per_second: number;
+    max_crawl_pages: number;
+    checks: ("headers" | "cookies" | "cors" | "sensitive_paths")[];
+    target_url?: string | undefined;
+    healthcheck_url?: string | undefined;
+    attacker?: {
+        provider: "anthropic" | "openai" | "google";
+        model: string;
+        skill: string;
+        name?: string | undefined;
+        maxTokens?: number | undefined;
+    } | undefined;
+    auth_headers?: Record<string, string> | undefined;
+}, {
+    sensitive_paths?: string[] | undefined;
+    enabled?: boolean | undefined;
+    gates?: {
+        block_on_confirmed_critical?: boolean | undefined;
+        block_on_confirmed_high?: boolean | undefined;
+    } | undefined;
+    target_url?: string | undefined;
+    healthcheck_url?: string | undefined;
+    timeout_seconds?: number | undefined;
+    max_requests?: number | undefined;
+    rate_limit_per_second?: number | undefined;
+    max_crawl_pages?: number | undefined;
+    attacker?: {
+        provider: "anthropic" | "openai" | "google";
+        model: string;
+        skill: string;
+        name?: string | undefined;
+        maxTokens?: number | undefined;
+    } | undefined;
+    checks?: ("headers" | "cookies" | "cors" | "sensitive_paths")[] | undefined;
+    auth_headers?: Record<string, string> | undefined;
+}>;
+export type DynamicConfig = z.infer<typeof DynamicConfig>;
 export declare const OutputConfig: z.ZodObject<{
     report: z.ZodDefault<z.ZodString>;
     findings: z.ZodDefault<z.ZodString>;
@@ -168,16 +264,16 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
     } & {
         name: z.ZodString;
     }, "strip", z.ZodTypeAny, {
+        name: string;
         provider: "anthropic" | "openai" | "google";
         model: string;
         skill: string;
-        name: string;
         maxTokens?: number | undefined;
     }, {
+        name: string;
         provider: "anthropic" | "openai" | "google";
         model: string;
         skill: string;
-        name: string;
         maxTokens?: number | undefined;
     }>, "many">;
     sast: z.ZodDefault<z.ZodObject<{
@@ -237,6 +333,99 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         max_cost_usd?: number | undefined;
         max_wall_time_minutes?: number | undefined;
     }>>;
+    dynamic: z.ZodDefault<z.ZodObject<{
+        enabled: z.ZodDefault<z.ZodBoolean>;
+        /** Optional runtime target. Can also be supplied with `secure-review attack --target-url`. */
+        target_url: z.ZodOptional<z.ZodString>;
+        healthcheck_url: z.ZodOptional<z.ZodString>;
+        timeout_seconds: z.ZodDefault<z.ZodNumber>;
+        max_requests: z.ZodDefault<z.ZodNumber>;
+        rate_limit_per_second: z.ZodDefault<z.ZodNumber>;
+        max_crawl_pages: z.ZodDefault<z.ZodNumber>;
+        attacker: z.ZodOptional<z.ZodObject<{
+            provider: z.ZodEnum<["anthropic", "openai", "google"]>;
+            model: z.ZodString;
+            skill: z.ZodString;
+            /** Optional display name. Reviewers use `name`; writer infers from role. */
+            name: z.ZodOptional<z.ZodString>;
+            /** Optional cap per single invocation (tokens). */
+            maxTokens: z.ZodOptional<z.ZodNumber>;
+        }, "strip", z.ZodTypeAny, {
+            provider: "anthropic" | "openai" | "google";
+            model: string;
+            skill: string;
+            name?: string | undefined;
+            maxTokens?: number | undefined;
+        }, {
+            provider: "anthropic" | "openai" | "google";
+            model: string;
+            skill: string;
+            name?: string | undefined;
+            maxTokens?: number | undefined;
+        }>>;
+        checks: z.ZodDefault<z.ZodArray<z.ZodEnum<["headers", "cookies", "cors", "sensitive_paths"]>, "many">>;
+        sensitive_paths: z.ZodDefault<z.ZodArray<z.ZodString, "many">>;
+        gates: z.ZodDefault<z.ZodObject<{
+            block_on_confirmed_critical: z.ZodDefault<z.ZodBoolean>;
+            block_on_confirmed_high: z.ZodDefault<z.ZodBoolean>;
+        }, "strip", z.ZodTypeAny, {
+            block_on_confirmed_critical: boolean;
+            block_on_confirmed_high: boolean;
+        }, {
+            block_on_confirmed_critical?: boolean | undefined;
+            block_on_confirmed_high?: boolean | undefined;
+        }>>;
+        /**
+         * Extra request headers on every Layer 4 HTTP request (`attack`, `attack-ai`, fix + attack-ai).
+         * Use for session cookies or Bearer tokens so probes hit authenticated routes.
+         * Prefer CI secrets or a gitignored overlay — do not commit real credentials.
+         */
+        auth_headers: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+    }, "strip", z.ZodTypeAny, {
+        sensitive_paths: string[];
+        enabled: boolean;
+        gates: {
+            block_on_confirmed_critical: boolean;
+            block_on_confirmed_high: boolean;
+        };
+        timeout_seconds: number;
+        max_requests: number;
+        rate_limit_per_second: number;
+        max_crawl_pages: number;
+        checks: ("headers" | "cookies" | "cors" | "sensitive_paths")[];
+        target_url?: string | undefined;
+        healthcheck_url?: string | undefined;
+        attacker?: {
+            provider: "anthropic" | "openai" | "google";
+            model: string;
+            skill: string;
+            name?: string | undefined;
+            maxTokens?: number | undefined;
+        } | undefined;
+        auth_headers?: Record<string, string> | undefined;
+    }, {
+        sensitive_paths?: string[] | undefined;
+        enabled?: boolean | undefined;
+        gates?: {
+            block_on_confirmed_critical?: boolean | undefined;
+            block_on_confirmed_high?: boolean | undefined;
+        } | undefined;
+        target_url?: string | undefined;
+        healthcheck_url?: string | undefined;
+        timeout_seconds?: number | undefined;
+        max_requests?: number | undefined;
+        rate_limit_per_second?: number | undefined;
+        max_crawl_pages?: number | undefined;
+        attacker?: {
+            provider: "anthropic" | "openai" | "google";
+            model: string;
+            skill: string;
+            name?: string | undefined;
+            maxTokens?: number | undefined;
+        } | undefined;
+        checks?: ("headers" | "cookies" | "cors" | "sensitive_paths")[] | undefined;
+        auth_headers?: Record<string, string> | undefined;
+    }>>;
     output: z.ZodDefault<z.ZodObject<{
         report: z.ZodDefault<z.ZodString>;
         findings: z.ZodDefault<z.ZodString>;
@@ -251,6 +440,9 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         diff?: string | undefined;
     }>>;
 }, "strip", z.ZodTypeAny, {
+    review: {
+        parallel: boolean;
+    };
     writer: {
         provider: "anthropic" | "openai" | "google";
         model: string;
@@ -259,19 +451,16 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         maxTokens?: number | undefined;
     };
     reviewers: {
+        name: string;
         provider: "anthropic" | "openai" | "google";
         model: string;
         skill: string;
-        name: string;
         maxTokens?: number | undefined;
     }[];
     sast: {
         enabled: boolean;
         tools: ("semgrep" | "eslint" | "npm_audit")[];
         inject_into_reviewer_context: boolean;
-    };
-    review: {
-        parallel: boolean;
     };
     fix: {
         mode: "sequential_rotation" | "parallel_aggregate";
@@ -285,6 +474,29 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         block_on_new_high: boolean;
         max_cost_usd: number;
         max_wall_time_minutes: number;
+    };
+    dynamic: {
+        sensitive_paths: string[];
+        enabled: boolean;
+        gates: {
+            block_on_confirmed_critical: boolean;
+            block_on_confirmed_high: boolean;
+        };
+        timeout_seconds: number;
+        max_requests: number;
+        rate_limit_per_second: number;
+        max_crawl_pages: number;
+        checks: ("headers" | "cookies" | "cors" | "sensitive_paths")[];
+        target_url?: string | undefined;
+        healthcheck_url?: string | undefined;
+        attacker?: {
+            provider: "anthropic" | "openai" | "google";
+            model: string;
+            skill: string;
+            name?: string | undefined;
+            maxTokens?: number | undefined;
+        } | undefined;
+        auth_headers?: Record<string, string> | undefined;
     };
     output: {
         report: string;
@@ -307,12 +519,15 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         maxTokens?: number | undefined;
     };
     reviewers: {
+        name: string;
         provider: "anthropic" | "openai" | "google";
         model: string;
         skill: string;
-        name: string;
         maxTokens?: number | undefined;
     }[];
+    review?: {
+        parallel?: boolean | undefined;
+    } | undefined;
     writers?: {
         provider: "anthropic" | "openai" | "google";
         model: string;
@@ -324,9 +539,6 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         enabled?: boolean | undefined;
         tools?: ("semgrep" | "eslint" | "npm_audit")[] | undefined;
         inject_into_reviewer_context?: boolean | undefined;
-    } | undefined;
-    review?: {
-        parallel?: boolean | undefined;
     } | undefined;
     fix?: {
         mode?: "sequential_rotation" | "parallel_aggregate" | undefined;
@@ -340,6 +552,29 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         block_on_new_high?: boolean | undefined;
         max_cost_usd?: number | undefined;
         max_wall_time_minutes?: number | undefined;
+    } | undefined;
+    dynamic?: {
+        sensitive_paths?: string[] | undefined;
+        enabled?: boolean | undefined;
+        gates?: {
+            block_on_confirmed_critical?: boolean | undefined;
+            block_on_confirmed_high?: boolean | undefined;
+        } | undefined;
+        target_url?: string | undefined;
+        healthcheck_url?: string | undefined;
+        timeout_seconds?: number | undefined;
+        max_requests?: number | undefined;
+        rate_limit_per_second?: number | undefined;
+        max_crawl_pages?: number | undefined;
+        attacker?: {
+            provider: "anthropic" | "openai" | "google";
+            model: string;
+            skill: string;
+            name?: string | undefined;
+            maxTokens?: number | undefined;
+        } | undefined;
+        checks?: ("headers" | "cookies" | "cors" | "sensitive_paths")[] | undefined;
+        auth_headers?: Record<string, string> | undefined;
     } | undefined;
     output?: {
         report?: string | undefined;

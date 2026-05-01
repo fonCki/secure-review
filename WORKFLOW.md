@@ -31,8 +31,10 @@ For readers arriving from `secure-code-despite-ai`, here is how the four modes m
 | `review` | **D** (review phase), generalized to N models | Layers 2–3 (review only) | One-shot multi-model review. Adds the multi-reader union + confidence scoring that single-agent Condition D lacked. |
 | `fix` | **D** (full review → fix → re-review) | Layers 2–3 | Operationalizes Condition D's loop with the rotation + convergence guards motivated by F2 and F3. |
 | `pr` | The protocol's *"running on every commit"* requirement | Layers 2–3, gated | Operationalizes the research question's commit-time validation, scoped to the PR diff. |
+| `attack` | Layer-4 extension | Layer 4 | Deterministic runtime probes against a live target URL. Records concrete HTTP evidence; not autonomous exploitation. |
+| `attack-ai` | Layer-4 extension | Layer 4 | Authorized AI attack simulator: bounded same-origin crawl, model-planned safe probes, and runtime-confirmed findings with source hints. |
 
-Layer 4 (dynamic / runtime testing) is **out of scope** for `secure-review` today — the protocol calls it out as a separate concern requiring a live target. The tool is sound on layers 1–3 and acknowledges this boundary in [§ Limitations](#limitations).
+Layer 4 is intentionally separate from static review. `attack` and `attack-ai` require a running target and report observed runtime evidence instead of code-only findings.
 
 ---
 
@@ -200,6 +202,18 @@ for i in 0 .. (max_iterations - 1):
     findingsAfter = applyBaseline(findingsAfter, baseline).kept    # FP suppression
     findingsAfter = registry.annotate(findingsAfter)               # stable S-NNN IDs
 
+    # Step B': Optional runtime audit (when --attack-target-url is set).
+    #   cadence = "every"   → re-run attack-ai every iteration; the freshly
+    #                         confirmed runtime findings are aggregated into
+    #                         findingsAfter so the verifier (and the next
+    #                         writer pass) see them on the same revision.
+    #   cadence = "bookend" → reuse the runtime findings from the initial
+    #                         attack phase; they still gate the convergence
+    #                         check below.
+    if attack:
+        runtimeFindings = (cadence == "every") ? attackAi.run() : lastRuntimeFindings
+        findingsAfter   = aggregate(findingsAfter + runtimeFindings)   # additive
+
     # Step C: Bookkeeping
     diff = compare(currentFindings, findingsAfter)
         .resolved   = in input but not in audit (matched by fingerprint)
@@ -270,11 +284,15 @@ Together these prevent the failure mode that motivated the 0.5.0 redesign: a sin
 
 ## `pr` mode — GitHub Action entrypoint
 
-Runs `review` mode on the full checkout, then filters the aggregated findings against the PR diff before posting a single review with line-anchored comments where GitHub permits them.
+Branches on **`INPUT_MODE`** / **`INPUT_RUNTIME_MODE`** (default **`review`**).
+
+### `review` branch (default)
+
+Runs `review` mode on the full checkout, then filters aggregated findings against the PR diff before posting a single review with line-anchored comments where GitHub permits them.
 
 ![pr mode: fork guard, diff commentable-line map, full-checkout review, PR review buckets, and exit status](docs/images/pr-mode.png)
 
-<details><summary>Pseudo-code</summary>
+<details><summary>Pseudo-code (`review`)</summary>
 
 ```
 1. Verify PR context: GITHUB_EVENT_PATH, owner/repo/pr_number
@@ -287,13 +305,166 @@ Runs `review` mode on the full checkout, then filters the aggregated findings ag
      - summary:       in a changed file BUT on an unchanged line  → mentioned in review summary
      - dropped:       in an untouched file                        → not posted
 6. `postPrReview` posts one PR review with all inline comments + summary text
-7. The CLI sets GitHub Check status:
-     - if config.gates.block_on_new_critical AND any CRITICAL inline finding → exit code 2 → check fails
-     - else → exit code 0 → check passes
+7. The CLI applies `evaluatePrGates` (static gates)
+     - CRITICAL/HIGH on changed files etc. → exit code 2 when blocked
 ```
 </details>
 
-Fork PR safety: forks don't have access to repo secrets, so reviewers would fail to authenticate. Skipping prevents wasted CI minutes and confusing failure modes.
+### `attack` / `attack-ai` branch
+
+Requires a reachable **`INPUT_TARGET_URL`** (or YAML `dynamic.target_url`). Optionally merges **`INPUT_AUTH_HEADERS_JSON`**, `SECURE_REVIEW_AUTH_HEADERS_JSON`, `dynamic.auth_headers`, and stdout JSON `{ "headers" }` from **`browser-login-script`** (your Node harness — embed Playwright there if needed). Runs `runAttackMode` or `runAttackAiMode`, then optional **`pentest-scanners`** — **OWASP ZAP baseline** (`docker run ghcr.io/zaproxy/zaproxy:stable zap-baseline.py …`) and **Nuclei** (`nuclei -json-export` if binary on PATH). Posts a Markdown-only **`postPrMarkdownReview`** (no inline diff comments — runtime findings rarely map cleanly to lines). Applies **`evaluateRuntimePrGate`** + built-in **`gateBlocked`** from the primary mode vs `dynamic.gates`.
+
+<details><summary>Pseudo-code (`attack` | `attack-ai`)</summary>
+
+```
+1–3. Same PR / fork guards as review
+4. Resolve target URL; merge auth headers (config + env JSON + hook script last line JSON)
+5. Run attack OR attack-ai (bounded probes; attacker model for attack-ai)
+6. For each token in INPUT_PENTEST_SCANNERS / --pentest-scanners:
+       zap-baseline → Docker ZAP baseline + parse JUnit to synthetic findings
+       nuclei → nuclei -json-export + parse NDJSON findings
+7. postPrMarkdownReview(cap body)
+8. Exit 2 if built-in probe gate fires OR evaluateRuntimePrGate(merged findings)
+```
+</details>
+
+Fork PR safety: forks don't have access to repo secrets — the job exits early regardless of branch.
+
+---
+
+## `attack` mode — Layer 4 runtime probes
+
+Runs deterministic HTTP checks against a live target URL. No model calls, no API keys, and no autonomous exploit generation. The goal is concrete runtime evidence for the protocol's Layer 4, while keeping the scope predictable enough for CI and thesis artifacts.
+
+<details><summary>Pseudo-code</summary>
+
+```
+1. Load `.secure-review.yml`
+2. Resolve target URL from `--target-url` or `dynamic.target_url`
+3. Optionally call `dynamic.healthcheck_url`; abort if it fails
+4. Run configured dynamic checks:
+     - headers: missing CSP, clickjacking protection, nosniff, HTTPS HSTS
+     - cookies: missing HttpOnly, Secure (HTTPS only), SameSite
+     - cors: wildcard or reflected untrusted Origin
+     - sensitive_paths: exposed `/.env`, `/.git/config`, config/debug/OpenAPI files
+5. Normalize observed runtime problems into the same Finding shape used by
+   static review (`D-01`, `D-02`, ...; reportedBy = ["dynamic"]; confidence = 1)
+6. Write markdown report + JSON evidence with:
+     - URL, method, status, duration
+     - request headers used by the probe
+     - response headers (Set-Cookie redacted)
+     - redacted response snippet for exposed sensitive paths
+7. Exit 2 if dynamic gates block on confirmed CRITICAL/HIGH findings
+```
+</details>
+
+Example:
+
+```
+secure-review attack . --target-url http://localhost:3000
+secure-review attack . --target-url http://localhost:3000 --checks headers,cors
+```
+
+Config:
+
+```yaml
+dynamic:
+  enabled: false
+  target_url: http://localhost:3000
+  healthcheck_url: http://localhost:3000/health
+  timeout_seconds: 30
+  checks:
+    - headers
+    - cookies
+    - cors
+    - sensitive_paths
+  sensitive_paths:
+    - /.env
+    - /.git/config
+    - /config.json
+    - /debug
+    - /swagger.json
+    - /openapi.json
+  gates:
+    block_on_confirmed_critical: true
+    block_on_confirmed_high: false
+  # Optional session/Bearer headers on every probe (also: CLI `-H` / fix `--attack-header`)
+  # auth_headers:
+  #   Cookie: "session=..."
+```
+
+This is the deterministic runtime foundation. For model-guided runtime testing, use `attack-ai`.
+
+**Authenticated probing:** `dynamic.auth_headers` and CLI `-H "Name: value"` (or `fix --attack-header`) are merged onto every Layer 4 `fetch` so headers/cookies/CORS/sensitive_paths checks and `attack-ai` crawl/probes can run as a logged-in user — without browser automation.
+
+---
+
+## `attack-ai` mode — authorized AI attack simulator
+
+Runs a bounded same-origin crawl, asks an attacker model to propose safe hypotheses, executes only constrained GET/POST probes, and emits findings only when runtime evidence confirms the behavior. It is designed to help the writer fix vulnerabilities by turning "the model suspects this" into "this URL/parameter produced this reproducible evidence".
+
+<details><summary>Pseudo-code</summary>
+
+```
+1. Load `.secure-review.yml`
+2. Resolve target URL from `--target-url` or `dynamic.target_url`
+3. Optionally call `dynamic.healthcheck_url`; abort if it fails
+4. Crawl same-origin pages only:
+     - GET pages up to dynamic.max_crawl_pages
+     - collect links, forms, methods, and field names
+     - respect dynamic.max_requests and dynamic.rate_limit_per_second
+5. Read source tree as context for localization hints
+6. Call attacker model (`dynamic.attacker`, else `writer`) with:
+     - crawl surface
+     - source context
+     - strict JSON schema for allowed hypotheses only
+7. Sanitize model output:
+     - reject out-of-origin URLs
+     - reject methods other than GET/POST
+     - reject malformed parameter names
+     - reject probes beyond the remaining request budget
+8. Execute safe probe categories:
+     - reflected_input: harmless marker payload must reflect unescaped
+     - error_disclosure: response must show stack trace / exception / DB error text
+     - open_redirect: redirect Location must point at secure-review.invalid
+     - path_exposure: path must return 2xx body content
+9. Normalize confirmed behaviors into Finding objects:
+     - ids A-01, A-02, ...
+     - reportedBy = ["attack-ai"]
+     - confidence = 1
+     - file/line use model source hints when provided, otherwise runtime URL
+10. Write markdown report + JSON evidence with pages, hypotheses, probes, limits,
+    cost, redacted snippets, and confirmed findings
+11. Exit 2 if dynamic gates block on confirmed CRITICAL/HIGH findings
+```
+</details>
+
+Example:
+
+```
+secure-review attack-ai . --target-url http://localhost:3000
+secure-review attack-ai . --target-url http://localhost:3000 --max-requests 25 --max-crawl-pages 10
+```
+
+Safety contract:
+
+- Same-origin only by default; the runner discards model-planned external URLs.
+- No destructive HTTP methods, credential theft, shell execution, SSRF, persistence, or high-volume traffic.
+- The model proposes hypotheses, but the runner owns the actual payloads and verification rules.
+- Findings require runtime confirmation; unconfirmed hypotheses stay in the JSON evidence as probes, not findings.
+
+Config additions:
+
+```yaml
+dynamic:
+  max_requests: 50
+  rate_limit_per_second: 2
+  max_crawl_pages: 20
+  attacker:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    skill: skills/authorized-attack-simulator.md
+```
 
 ---
 
@@ -416,13 +587,26 @@ F2 measured that naive scan→fix→scan loops either fail to converge or active
 
 | Exit mechanism | Type | Failure mode it prevents |
 |---|---|---|
-| `consecutiveCleanIters >= N` | **Convergence** | A single lenient reader ending the loop while readers it didn't rotate to would still flag issues (the F3 failure mode). |
+| `consecutiveCleanIters >= N` | **Convergence** (additive when `attack-ai` is enabled) | A single lenient reader ending the loop while readers it didn't rotate to would still flag issues (the F3 failure mode). When `--attack-target-url` is set, the iteration-clean test also requires runtime findings to be empty, so static-only "blindspot fixes" can no longer end the loop. |
 | `divergenceStreak >= 2` | Bound (regression detector) | The writer is making the codebase worse, not better — stop before the LOC-growth runaway F2 measured at 33–86%. |
 | `block_on_new_critical` | Bound | An iteration that introduces new CRITICAL findings is treated as a regression and short-circuits the loop (the F2 "fixes make it worse" failure mode); on this exit the loop also restores the pre-iteration snapshot. |
 | `max_cost_usd`, `max_wall_time_minutes` | Bound | Runaway loops in cases where convergence is genuinely unreachable for the given codebase / model combination. The pre-run cost estimate (see [§ Cross-cutting features](#cross-cutting-features)) makes the budget contract visible *before* spending. |
 | `max_iterations` (≤ 10) | Bound | Hard ceiling on write churn; bounds the LOC-growth runaway F2 measured at 33–86%. |
 
 The post-loop **final verification with `all_reviewers`** is a separate safety net for a different failure mode: an iteration verifier saying "clean" while readers it didn't rotate to would still flag issues. It is recommended (and the default for new configs created by `init`) precisely because it directly addresses F3's low single-agent resolution rate.
+
+### Runtime-aware fix loop (`--attack-target-url`)
+
+Static review answers "does the source look unsafe?". When `--attack-target-url <url>` is set on `fix` mode (or `dynamic.target_url` is configured), an authorized attacker model also answers "does the *running app* still misbehave?" using the same machinery as standalone `attack-ai` mode (bounded same-origin crawl, model-planned safe probes, runtime-confirmed findings only). On both `fix` and `attack-ai`, **`--attack-provider`**, **`--attack-model`**, and **`--attack-skill`** override the corresponding fields from `dynamic.attacker` (or `writer`) without editing YAML; omitted parts still come from config. The merge is implemented as `mergeAttackerRef()` in `src/modes/attack-ai.ts`.
+
+| Cadence | When attack-ai runs | What the writer sees | Cost shape |
+|---|---|---|---|
+| `bookend` (default) | Once before iter 1 + once after final verification | Iter-1 to-do list = static union ∪ initial runtime findings; later iterations carry the same runtime set forward | Two attacker calls per `fix` run |
+| `every` (`--attack-every-iter`) | Once before iter 1, after every iteration's verifier audit, and after final verification | Each iteration's verifier output is aggregated with a *fresh* runtime audit on the same revision | Up to `max_iterations + 2` attacker calls |
+
+**Additive convergence.** The early-exit test (`findingsAfter.empty`) is evaluated *after* runtime findings are merged into `findingsAfter`, so a clean static reviewer pass that still leaves runtime probes confirming a vulnerability does **not** end the loop. Both signals must be empty for `consecutiveCleanIters` to advance.
+
+**Stable IDs unify the two signals.** Runtime findings are fingerprinted by `{file, line-bucket}` like static findings, so when the attacker reports a reflected-XSS hypothesis with `sourceFile: "src/server.ts"` and `lineStart: 1`, the fingerprint matches a static finding at `src/server.ts:1` and they merge — keeping the same `S-NNN` across iterations and showing up in the report as a single bug confirmed by both a reviewer and the attacker, not as two separate items.
 
 ### Cost gates are not theoretical
 
@@ -442,11 +626,24 @@ Three safety nets keep the tool running under transient failures:
 
 ---
 
+## Verifying locally
+
+The pseudo-code sections above map to `src/modes/*.ts`, reporters under `src/reporters/`, and the CLI in `src/cli.ts`. To confirm the implementation matches this document:
+
+1. **Automated suite** — From the repo root: `npm run typecheck` and `npm test` (Vitest). Tests cover parsing, aggregation, reporters, deterministic `attack` against local HTTP fixtures, `attack-ai` with mocked attacker adapters, and `fix` + runtime aggregation (`test/fix-attack-integration.test.ts`).
+2. **Focused fix-loop cases** — `npm run test:attack-loop` runs `test/attack-review-loop-live-apps.test.ts` (mocked adapters; exercises rotation / convergence semantics).
+3. **No-key smoke** — `secure-review scan <path>` loads config and runs SAST only (stdout JSON). `secure-review --help` confirms CLI wiring.
+4. **Deterministic Layer 4** — With your app listening: `secure-review attack . --target-url ...`, then inspect `reports/attack-*.json` (`condition: "F-attack"`).
+
+Full checklist (including `estimate`, `build`, and `build:action`): [README § Developing and verifying](README.md#developing-and-verifying).
+
+---
+
 ## Limitations
 
 Adapted from `secure-code-despite-ai`'s Section 13 threats-to-validity. None of these are bugs — they're scope boundaries the tool acknowledges so users calibrate trust accordingly.
 
-- **Layer scope.** Covers static + AI review (defense-in-depth pipeline layers 1–3). It does **not** cover layer 4 — dynamic / runtime testing (OpenClaw or equivalent in-Docker pentest agents). For the fully autonomous runtime story the protocol describes, `secure-review` is necessary but not sufficient.
+- **Automation boundary.** Covers static + AI review (layers 1–3), deterministic `attack`, bounded same-origin `attack-ai`, optional **CI wrappers** (**ZAP baseline** via Docker, **Nuclei** via CLI export), and **browser-login-script** hooks (you provide the Node driver — Playwright/Puppeteer live in _your_ script; we merge returned headers only). Built-in probes remain **bounded** (same-origin-safe categories in `attack-ai`; no autonomous exploit chains orchestrated beyond configured scanners **plus** nuclei/template traffic you explicitly enable).
 - **Non-determinism.** AI readers and writers produce different outputs on the same input. The JSON evidence records `model_version` per run, but temperature and seed are not pinned uniformly across providers (and some providers don't expose seeds at all). Studies should plan multiple runs per condition, mirroring the protocol's 3-runs-per-task baseline.
 - **TP/FP labeling stays human.** Aggregation downweights single-source findings via `confidence`, but final true-positive vs. false-positive classification still requires a human or a separate evaluation harness. The tool surfaces evidence; it does not adjudicate.
 - **Provider model evolution.** Models change between runs — the protocol calls this out explicitly as a threat to reproducibility. JSON evidence captures `model_version` and `timestamp` so historical comparisons remain auditable even when not byte-reproducible.
@@ -456,13 +653,23 @@ Adapted from `secure-code-despite-ai`'s Section 13 threats-to-validity. None of 
 
 ## Output schema
 
-Both `review` and `fix` modes emit three report files per run:
+`review` and `fix` modes emit three report files per run:
 
 - `reports/<mode>-<timestamp>.md` — human-readable Markdown report.
 - `reports/<mode>-<timestamp>.html` — self-contained interactive report (inline CSS + JS, no external assets). Sortable/filterable findings list, collapsible details per finding, fix-mode adds a before/after delta + per-iteration timeline. Works offline; safe to commit, attach to a PR comment, or open from a CI artifact.
 - `reports/<mode>-<timestamp>.json` — structured evidence JSON, schema-stable across versions (defined in `src/findings/schema.ts`).
 
-The JSON schema is **deliberately compatible with `secure-code-despite-ai`'s Condition D evidence format** — `secure-review` runs are tagged `condition: "F-review"` or `condition: "F-fix"` so they plot directly alongside the original A/B/C/D baselines without conversion. Think of `secure-review` output as **Condition F**: an extension of the original experimental matrix, not a parallel format.
+`attack` mode emits:
+
+- `reports/attack-<timestamp>.md` — human-readable runtime probe report.
+- `reports/attack-<timestamp>.json` — structured runtime evidence (`condition: "F-attack"`) including `target_url`, `checks`, `runtime_findings`, `gate_blocked`, and `gate_reasons`.
+
+`attack-ai` mode emits:
+
+- `reports/attack-ai-<timestamp>.md` — human-readable AI attack simulation report.
+- `reports/attack-ai-<timestamp>.json` — structured runtime evidence (`condition: "F-attack-ai"`) including `target_url`, `crawled_pages`, `hypotheses`, `probes`, `runtime_findings`, safety `limits`, `gate_blocked`, and `gate_reasons`.
+
+The JSON schema is **deliberately compatible with `secure-code-despite-ai`'s Condition D evidence format** — `secure-review` runs are tagged `condition: "F-review"`, `condition: "F-fix"`, `condition: "F-attack"`, or `condition: "F-attack-ai"` so they plot directly alongside the original A/B/C/D baselines without conversion. Think of `secure-review` output as **Condition F**: an extension of the original experimental matrix, not a parallel format.
 
 ### Mapping to research metrics
 

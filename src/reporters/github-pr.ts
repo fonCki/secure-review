@@ -1,17 +1,20 @@
 import { Octokit } from '@octokit/rest';
-import type { SecureReviewConfig } from '../config/schema.js';
+import type { DynamicConfig, SecureReviewConfig } from '../config/schema.js';
 import { severityBreakdown } from '../findings/aggregate.js';
 import type { Finding, SeverityBreakdown } from '../findings/schema.js';
 import type { ReviewModeOutput } from '../modes/review.js';
 import { normalizeScanPath } from '../util/files.js';
 import { log } from '../util/logger.js';
 
-export interface PrPostOptions {
+export interface PrPostBaseOptions {
   owner: string;
   repo: string;
   prNumber: number;
   commitSha: string;
   token: string;
+}
+
+export interface PrPostOptions extends PrPostBaseOptions {
   /**
    * Map of changed-file path → Set of new-file line numbers that are valid
    * anchor points for a PR review comment (i.e. lines that appear in the
@@ -123,6 +126,37 @@ export async function postPrReview(
     severityCountsTouched: severityBreakdown([...inDiff, ...outOfDiffInTouchedFiles]),
     droppedCount: droppedOutsideTouchedFiles,
   };
+}
+
+/** PR review with Markdown body only (no inline comments) — used for runtime / scanner summaries. */
+export async function postPrMarkdownReview(
+  opts: PrPostBaseOptions & { bodyMarkdown: string },
+): Promise<void> {
+  const octokit = new Octokit({ auth: opts.token });
+  await octokit.pulls.createReview({
+    owner: opts.owner,
+    repo: opts.repo,
+    pull_number: opts.prNumber,
+    commit_id: opts.commitSha,
+    event: 'COMMENT',
+    body: opts.bodyMarkdown,
+  });
+  log.success(`Posted runtime/security summary review to ${opts.owner}/${opts.repo}#${opts.prNumber}`);
+}
+
+export function evaluateRuntimePrGate(
+  findings: Finding[],
+  gates: DynamicConfig['gates'],
+): PrGateDecision {
+  const b = severityBreakdown(findings);
+  const reasons: string[] = [];
+  if (gates.block_on_confirmed_critical && b.CRITICAL > 0) {
+    reasons.push(`${b.CRITICAL} confirmed CRITICAL runtime / scanner finding(s)`);
+  }
+  if (gates.block_on_confirmed_high && b.HIGH > 0) {
+    reasons.push(`${b.HIGH} confirmed HIGH runtime / scanner finding(s)`);
+  }
+  return { blocked: reasons.length > 0, reasons };
 }
 
 export function evaluatePrGates(
