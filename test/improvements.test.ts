@@ -161,6 +161,20 @@ describe('snapshotFiles / restoreSnapshot', () => {
     expect(readFileSync(join(root, 'src/app.ts'), 'utf8')).toBe('original content');
   });
 
+  it('does not delete tracked files that are missing from a subset snapshot', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'sr-snapshot-'));
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'src/kept.ts'), 'must remain');
+    writeFileSync(join(root, 'src/app.ts'), 'corrupt');
+
+    const snap = new Map<string, string>();
+    snap.set('src/app.ts', 'restored');
+
+    await restoreSnapshot(root, snap);
+    expect(readFileSync(join(root, 'src/app.ts'), 'utf8')).toBe('restored');
+    expect(readFileSync(join(root, 'src/kept.ts'), 'utf8')).toBe('must remain');
+  });
+
   it('removes new files introduced after the snapshot', async () => {
     const root = mkdtempSync(join(tmpdir(), 'sr-snapshot-'));
     mkdirSync(join(root, 'src'), { recursive: true });
@@ -173,7 +187,7 @@ describe('snapshotFiles / restoreSnapshot', () => {
     writeFileSync(join(root, 'src/new.ts'), 'export const injected = 1;');
     expect(readFileSync(join(root, 'src/new.ts'), 'utf8')).toContain('injected');
 
-    await restoreSnapshot(root, snap);
+    await restoreSnapshot(root, snap, { writerTouchedRelPaths: ['src/new.ts'] });
     expect(() => readFileSync(join(root, 'src/new.ts'), 'utf8')).toThrow();
   });
 });

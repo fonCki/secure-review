@@ -129,20 +129,38 @@ export interface FixModeOutput {
 /** Capture a snapshot of file contents keyed by relPath. */
 export function snapshotFiles(files: FileContent[]): Map<string, string> {
   const snap = new Map<string, string>();
-  for (const f of files) snap.set(f.relPath, f.content);
+  for (const f of files) snap.set(normalizeRelPath(f.relPath), f.content);
   return snap;
 }
 
+/** Options for {@link restoreSnapshot}. */
+export type RestoreSnapshotOptions = {
+  /**
+   * Paths the writer reported touching this iteration (normalized repo-relative paths).
+   * Any path listed here that is **not** in `snapshot` is treated as a file **created**
+   * by the writer and is deleted on restore.
+   *
+   * When omitted, no paths are deleted — only snapshot entries are written back.
+   * That avoids wiping files outside an incremental `--since` subset (the snapshot
+   * map might only cover a fraction of the repo).
+   */
+  writerTouchedRelPaths?: string[];
+};
+
 /** Restore snapshotted files to disk using writeFileSafe. */
-export async function restoreSnapshot(root: string, snapshot: Map<string, string>): Promise<void> {
+export async function restoreSnapshot(
+  root: string,
+  snapshot: Map<string, string>,
+  options?: RestoreSnapshotOptions,
+): Promise<void> {
   const rootAbs = resolve(root);
-  // Best-effort cleanup: if the writer created new code files after the snapshot,
-  // remove them so rollback is complete (otherwise a malicious/buggy writer could
-  // leave behind additional executable code even after "restore").
-  const currentFiles = await readSourceTree(rootAbs);
-  for (const f of currentFiles) {
-    if (snapshot.has(f.relPath)) continue;
-    await rm(resolve(rootAbs, f.relPath), { force: true });
+  const touched = options?.writerTouchedRelPaths;
+  if (touched && touched.length > 0) {
+    for (const raw of touched) {
+      const relPath = normalizeRelPath(raw);
+      if (snapshot.has(relPath)) continue;
+      await rm(resolve(rootAbs, relPath), { force: true });
+    }
   }
   for (const [relPath, content] of snapshot) {
     const target = resolve(rootAbs, relPath);
@@ -531,7 +549,9 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
         // Improvement 3: rollback if writer introduced new CRITICALs
         if (newCritical > 0 && writerRun && writerRun.filesChanged.length > 0) {
           log.warn('Writer introduced new CRITICAL(s) — rolling back to pre-iteration snapshot');
-          await restoreSnapshot(root, preWriterSnapshot);
+          await restoreSnapshot(root, preWriterSnapshot, {
+            writerTouchedRelPaths: writerRun.filesChanged,
+          });
           currentFindings = findingsToFix;
         } else {
           currentFindings = findingsAfter;

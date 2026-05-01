@@ -130,6 +130,7 @@ export async function runBenchmarkMode(input: BenchmarkModeInput): Promise<Bench
     let findingsIntroduced = 0;
     let costUSD = 0;
     let errorMsg: string | undefined;
+    let writerTouchedRelPaths: string[] = [];
 
     try {
       const wSpinner = spinner(`Writer ${writerName} fixing ${initialFindings.length} finding(s)`);
@@ -144,6 +145,7 @@ export async function runBenchmarkMode(input: BenchmarkModeInput): Promise<Bench
       });
       costUSD = writerRun.usage.costUSD;
       filesChanged = writerRun.filesChanged.length;
+      writerTouchedRelPaths = writerRun.filesChanged;
 
       if (writerRun.error) {
         wSpinner.fail(`Writer ${writerName} failed: ${writerRun.error}`);
@@ -201,7 +203,7 @@ export async function runBenchmarkMode(input: BenchmarkModeInput): Promise<Bench
 
     // Restore original files before next writer run
     log.info(`Restoring original files before next writer run...`);
-    await restoreSnapshot(root, originalSnapshot);
+    await restoreSnapshot(root, originalSnapshot, { writerTouchedRelPaths });
   }
 
   return {

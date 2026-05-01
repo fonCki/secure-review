@@ -112,8 +112,21 @@ export interface FixModeOutput {
 }
 /** Capture a snapshot of file contents keyed by relPath. */
 export declare function snapshotFiles(files: FileContent[]): Map<string, string>;
+/** Options for {@link restoreSnapshot}. */
+export type RestoreSnapshotOptions = {
+    /**
+     * Paths the writer reported touching this iteration (normalized repo-relative paths).
+     * Any path listed here that is **not** in `snapshot` is treated as a file **created**
+     * by the writer and is deleted on restore.
+     *
+     * When omitted, no paths are deleted — only snapshot entries are written back.
+     * That avoids wiping files outside an incremental `--since` subset (the snapshot
+     * map might only cover a fraction of the repo).
+     */
+    writerTouchedRelPaths?: string[];
+};
 /** Restore snapshotted files to disk using writeFileSafe. */
-export declare function restoreSnapshot(root: string, snapshot: Map<string, string>): Promise<void>;
+export declare function restoreSnapshot(root: string, snapshot: Map<string, string>, options?: RestoreSnapshotOptions): Promise<void>;
 /** Filter findings down to those that meet the configured thresholds. */
 export declare function filterFindingsForWriter(findings: Finding[], minConfidence: number, minSeverityToFix: Finding['severity']): Finding[];
 /**
