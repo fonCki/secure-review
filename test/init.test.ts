@@ -20,8 +20,6 @@ describe('init generators', () => {
     expect(yml).toContain('gemini-flash');
     expect(yml).toContain('sast:\n  enabled: true');
     expect(yml).toContain('block_on_new_critical: true');
-    expect(yml).toContain('dynamic:\n  attacker:');
-    expect(yml).toContain('skill: node_modules/secure-review/skills/authorized-attack-simulator.md');
   });
 
   it('omits unselected reviewers', () => {

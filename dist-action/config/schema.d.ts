@@ -33,16 +33,16 @@ export declare const ReviewerRef: z.ZodObject<{
 } & {
     name: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    name: string;
     provider: "anthropic" | "openai" | "google";
     model: string;
     skill: string;
+    name: string;
     maxTokens?: number | undefined;
 }, {
-    name: string;
     provider: "anthropic" | "openai" | "google";
     model: string;
     skill: string;
+    name: string;
     maxTokens?: number | undefined;
 }>;
 export type ReviewerRef = z.infer<typeof ReviewerRef>;
@@ -148,13 +148,11 @@ export declare const DynamicConfig: z.ZodObject<{
         block_on_confirmed_high?: boolean | undefined;
     }>>;
     /**
-     * Extra request headers on every Layer 4 HTTP request (`attack`, `attack-ai`, fix + attack-ai).
-     * Use for session cookies or Bearer tokens so probes hit authenticated routes.
-     * Prefer CI secrets or a gitignored overlay — do not commit real credentials.
+     * Optional headers for future runtime tooling. Core `secure-review` is static-only;
+     * use `secure-review-runtime` for live probes. Kept for config compatibility.
      */
     auth_headers: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
 }, "strip", z.ZodTypeAny, {
-    sensitive_paths: string[];
     enabled: boolean;
     gates: {
         block_on_confirmed_critical: boolean;
@@ -164,6 +162,7 @@ export declare const DynamicConfig: z.ZodObject<{
     max_requests: number;
     rate_limit_per_second: number;
     max_crawl_pages: number;
+    sensitive_paths: string[];
     checks: ("headers" | "cookies" | "cors" | "sensitive_paths")[];
     target_url?: string | undefined;
     healthcheck_url?: string | undefined;
@@ -176,7 +175,6 @@ export declare const DynamicConfig: z.ZodObject<{
     } | undefined;
     auth_headers?: Record<string, string> | undefined;
 }, {
-    sensitive_paths?: string[] | undefined;
     enabled?: boolean | undefined;
     gates?: {
         block_on_confirmed_critical?: boolean | undefined;
@@ -195,6 +193,7 @@ export declare const DynamicConfig: z.ZodObject<{
         name?: string | undefined;
         maxTokens?: number | undefined;
     } | undefined;
+    sensitive_paths?: string[] | undefined;
     checks?: ("headers" | "cookies" | "cors" | "sensitive_paths")[] | undefined;
     auth_headers?: Record<string, string> | undefined;
 }>;
@@ -264,16 +263,16 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
     } & {
         name: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        name: string;
         provider: "anthropic" | "openai" | "google";
         model: string;
         skill: string;
+        name: string;
         maxTokens?: number | undefined;
     }, {
-        name: string;
         provider: "anthropic" | "openai" | "google";
         model: string;
         skill: string;
+        name: string;
         maxTokens?: number | undefined;
     }>, "many">;
     sast: z.ZodDefault<z.ZodObject<{
@@ -376,13 +375,11 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
             block_on_confirmed_high?: boolean | undefined;
         }>>;
         /**
-         * Extra request headers on every Layer 4 HTTP request (`attack`, `attack-ai`, fix + attack-ai).
-         * Use for session cookies or Bearer tokens so probes hit authenticated routes.
-         * Prefer CI secrets or a gitignored overlay — do not commit real credentials.
+         * Optional headers for future runtime tooling. Core `secure-review` is static-only;
+         * use `secure-review-runtime` for live probes. Kept for config compatibility.
          */
         auth_headers: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
     }, "strip", z.ZodTypeAny, {
-        sensitive_paths: string[];
         enabled: boolean;
         gates: {
             block_on_confirmed_critical: boolean;
@@ -392,6 +389,7 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         max_requests: number;
         rate_limit_per_second: number;
         max_crawl_pages: number;
+        sensitive_paths: string[];
         checks: ("headers" | "cookies" | "cors" | "sensitive_paths")[];
         target_url?: string | undefined;
         healthcheck_url?: string | undefined;
@@ -404,7 +402,6 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         } | undefined;
         auth_headers?: Record<string, string> | undefined;
     }, {
-        sensitive_paths?: string[] | undefined;
         enabled?: boolean | undefined;
         gates?: {
             block_on_confirmed_critical?: boolean | undefined;
@@ -423,6 +420,7 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
             name?: string | undefined;
             maxTokens?: number | undefined;
         } | undefined;
+        sensitive_paths?: string[] | undefined;
         checks?: ("headers" | "cookies" | "cors" | "sensitive_paths")[] | undefined;
         auth_headers?: Record<string, string> | undefined;
     }>>;
@@ -440,9 +438,6 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         diff?: string | undefined;
     }>>;
 }, "strip", z.ZodTypeAny, {
-    review: {
-        parallel: boolean;
-    };
     writer: {
         provider: "anthropic" | "openai" | "google";
         model: string;
@@ -451,16 +446,19 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         maxTokens?: number | undefined;
     };
     reviewers: {
-        name: string;
         provider: "anthropic" | "openai" | "google";
         model: string;
         skill: string;
+        name: string;
         maxTokens?: number | undefined;
     }[];
     sast: {
         enabled: boolean;
         tools: ("semgrep" | "eslint" | "npm_audit")[];
         inject_into_reviewer_context: boolean;
+    };
+    review: {
+        parallel: boolean;
     };
     fix: {
         mode: "sequential_rotation" | "parallel_aggregate";
@@ -476,7 +474,6 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         max_wall_time_minutes: number;
     };
     dynamic: {
-        sensitive_paths: string[];
         enabled: boolean;
         gates: {
             block_on_confirmed_critical: boolean;
@@ -486,6 +483,7 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         max_requests: number;
         rate_limit_per_second: number;
         max_crawl_pages: number;
+        sensitive_paths: string[];
         checks: ("headers" | "cookies" | "cors" | "sensitive_paths")[];
         target_url?: string | undefined;
         healthcheck_url?: string | undefined;
@@ -519,15 +517,12 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         maxTokens?: number | undefined;
     };
     reviewers: {
-        name: string;
         provider: "anthropic" | "openai" | "google";
         model: string;
         skill: string;
+        name: string;
         maxTokens?: number | undefined;
     }[];
-    review?: {
-        parallel?: boolean | undefined;
-    } | undefined;
     writers?: {
         provider: "anthropic" | "openai" | "google";
         model: string;
@@ -539,6 +534,9 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         enabled?: boolean | undefined;
         tools?: ("semgrep" | "eslint" | "npm_audit")[] | undefined;
         inject_into_reviewer_context?: boolean | undefined;
+    } | undefined;
+    review?: {
+        parallel?: boolean | undefined;
     } | undefined;
     fix?: {
         mode?: "sequential_rotation" | "parallel_aggregate" | undefined;
@@ -554,7 +552,6 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
         max_wall_time_minutes?: number | undefined;
     } | undefined;
     dynamic?: {
-        sensitive_paths?: string[] | undefined;
         enabled?: boolean | undefined;
         gates?: {
             block_on_confirmed_critical?: boolean | undefined;
@@ -573,6 +570,7 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
             name?: string | undefined;
             maxTokens?: number | undefined;
         } | undefined;
+        sensitive_paths?: string[] | undefined;
         checks?: ("headers" | "cookies" | "cors" | "sensitive_paths")[] | undefined;
         auth_headers?: Record<string, string> | undefined;
     } | undefined;

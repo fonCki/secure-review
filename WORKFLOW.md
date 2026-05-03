@@ -2,6 +2,8 @@
 
 How `secure-review` actually executes each mode. Pseudo-code matches the source — every step here corresponds to real code in `src/modes/` and `src/roles/`.
 
+**Layer 4** (live HTTP probes, ZAP/Nuclei, `attack` / `attack-ai` CLIs) is implemented in the sibling package **`secure-review-runtime`**, not in this repo. The sections below that describe those flows are retained as methodology reference until they are fully relocated.
+
 > The design choices in this tool are direct responses to failure modes measured in [`secure-code-despite-ai`](https://github.com/fonCki/secure-code-despite-ai). If something looks over-engineered, the next section explains which experimental finding motivates it.
 
 ---
@@ -30,11 +32,10 @@ For readers arriving from `secure-code-despite-ai`, here is how the four modes m
 | `scan` | **B** (SAST-only) | Layer 2 | Per F1, intentionally insufficient on its own — useful as fast triage, not as a security gate. |
 | `review` | **D** (review phase), generalized to N models | Layers 2–3 (review only) | One-shot multi-model review. Adds the multi-reader union + confidence scoring that single-agent Condition D lacked. |
 | `fix` | **D** (full review → fix → re-review) | Layers 2–3 | Operationalizes Condition D's loop with the rotation + convergence guards motivated by F2 and F3. |
-| `pr` | The protocol's *"running on every commit"* requirement | Layers 2–3, gated | Operationalizes the research question's commit-time validation, scoped to the PR diff. |
-| `attack` | Layer-4 extension | Layer 4 | Deterministic runtime probes against a live target URL. Records concrete HTTP evidence; not autonomous exploitation. |
-| `attack-ai` | Layer-4 extension | Layer 4 | Authorized AI attack simulator: bounded same-origin crawl, model-planned safe probes, and runtime-confirmed findings with source hints. |
+| `pr` | The protocol's *"running on every commit"* requirement | Layers 2–3, gated | Operationalizes the research question's commit-time validation, scoped to the PR diff (static review only in core). |
+| `attack` / `attack-ai` | Layer-4 extension | Layer 4 | Provided by **`secure-review-runtime`** — deterministic probes and AI-planned probes vs a live URL. |
 
-Layer 4 is intentionally separate from static review. `attack` and `attack-ai` require a running target and report observed runtime evidence instead of code-only findings.
+Layer 4 is intentionally separate from static review and ships in **`secure-review-runtime`**.
 
 ---
 

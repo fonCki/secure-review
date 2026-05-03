@@ -1,5 +1,5 @@
 name: 'Secure Review'
-description: 'Multi-model security review on PRs: static reviewers (review), optional deterministic attack, AI attack simulation, OWASP ZAP baseline (Docker), and Nuclei—plus optional authenticated scans via hooks / JSON headers.'
+description: 'Multi-model static security review on pull requests: LLM reviewers + SAST, with inline PR comments on changed lines.'
 author: 'Alfonso Pedro Ridao'
 branding:
   icon: 'shield'
@@ -10,35 +10,11 @@ inputs:
     required: false
     default: '.secure-review.yml'
   mode:
-    description: 'Static + runtime mode for the Action. review = multi-model audit + PR inline comments. attack = deterministic Layer 4 HTTP probes (+ optional scanners). attack-ai = bounded AI-planned probes (+ optional scanners). fix = deprecated alias for review only.'
+    description: 'Static review only. `fix` is a deprecated alias for `review` (multi-model audit + PR comments). For live target probes, ZAP, or Nuclei, use the `secure-review-runtime` package instead.'
     required: false
     default: 'review'
-  runtime-mode:
-    description: 'Optional override of `mode` when you want Inputs UI to say "runtime-mode" explicitly. Same allowed values as `mode`: review | attack | attack-ai | fix (fix maps to review).'
-    required: false
-    default: ''
-  target-url:
-    description: 'Live app base URL required when mode is attack or attack-ai (also used as ZAP/Nuclei target). Must be reachable from the runner (often http://localhost:PORT after npm start).'
-    required: false
-    default: ''
-  pentest-scanners:
-    description: 'Comma-separated optional external engines after built-in probes: zap-baseline (Docker pulls ghcr.io/zaproxy/zaproxy:stable), nuclei (binary on PATH). Example: zap-baseline,nuclei'
-    required: false
-    default: ''
-  browser-login-script:
-    description: 'Path to a Node script in the repo that prints one JSON line { "headers": { "Cookie": "...", ... } } for authenticated crawling / probes (Playwright belongs in YOUR script—we only execute Node and merge headers).'
-    required: false
-    default: ''
-  auth-headers-json:
-    description: 'JSON object of extra HTTP headers (e.g. { "Authorization": "Bearer ..." }). Prefer GitHub Secrets → env → this input.'
-    required: false
-    default: ''
-  runtime-timeout-seconds:
-    description: 'Wall-clock budget per job for scanners + probes (30–7200). Separate from dynamic.timeout_seconds in YAML.'
-    required: false
-    default: '900'
   max-cost-usd:
-    description: 'Cost ceiling for AI-backed modes (ignored for attack-only deterministic mode)'
+    description: 'Cost ceiling for AI-backed static review (reviewers + writer if used elsewhere).'
     required: false
     default: '20'
 runs:

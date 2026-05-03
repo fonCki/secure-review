@@ -4,7 +4,9 @@
 [![npm downloads](https://img.shields.io/npm/dm/secure-review.svg)](https://www.npmjs.com/package/secure-review)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Multi-model security review for AI-generated code.** CLI and GitHub Action that runs several LLM reviewers (Anthropic, OpenAI, Google) and SAST tools (Semgrep, ESLint, npm audit) against your codebase. Findings are aggregated across reviewers — overlap becomes a confidence signal. Modes: `scan` (SAST only), `review` (multi-model report), `fix` (cross-model rotating loop applies fixes), `attack` (Layer 4 deterministic runtime probes), `attack-ai` (authorized AI-planned runtime probes), `pr` (GitHub Action entrypoint), `estimate` (preview cost without running), `baseline` (mark known/accepted findings), `benchmark` (compare writer models), `compare` (A/B path diff), `reviewer-benchmark` (single vs multi-model reviewer comparison).
+**Multi-model security review for AI-generated code.** CLI and GitHub Action that runs several LLM reviewers (Anthropic, OpenAI, Google) and SAST tools (Semgrep, ESLint, npm audit) against your codebase. Findings are aggregated across reviewers — overlap becomes a confidence signal. Modes: `scan` (SAST only), `review` (multi-model report), `fix` (cross-model rotating loop applies fixes), `pr` (GitHub Action entrypoint for static review), `estimate` (preview cost without running), `baseline` (mark known/accepted findings), `benchmark` (compare writer models), `compare` (A/B path diff), `reviewer-benchmark` (single vs multi-model reviewer comparison).
+
+**Live target testing** (deterministic `attack`, `attack-ai`, ZAP, Nuclei, browser-login hooks) lives in the companion package **`secure-review-runtime`**, which depends on this library for shared types and reporters. Install both if you need static review plus runtime probes.
 
 ```bash
 npm install --save-dev secure-review        # https://www.npmjs.com/package/secure-review
@@ -50,15 +52,13 @@ npx secure-review review ./src
 | `secure-review scan <path>` | SAST only — no AI calls, no API keys needed |
 | `secure-review review <path>` | Multi-model review, no file changes |
 | `secure-review fix <path>` | Iterative review → write → re-review loop |
-| `secure-review attack [path] --target-url <url>` | Layer 4 deterministic runtime probes against a live app (headers, cookies, CORS, sensitive paths) |
-| `secure-review attack-ai [path] --target-url <url>` | Authorized AI attack simulator: bounded crawl → model-planned safe probes → runtime-confirmed findings |
 | `secure-review estimate <path> [--mode review\|fix]` | Print a pre-run cost estimate without invoking any model |
 | `secure-review baseline <findings.json> [--merge] [--reason ...]` | Create or update a `.secure-review-baseline.json` of known/accepted findings to suppress in subsequent runs |
 | `secure-review benchmark <path>` | Compare multiple writer models head-to-head on fix quality |
 | `secure-review compare <pathA> <pathB>` | Side-by-side security diff of two codebases |
 | `secure-review reviewer-benchmark <path>` | Show what each single model misses vs the combined multi-model ensemble |
 | `secure-review setup-secrets` | Push API keys from local `.env` to GitHub Action secrets via `gh` CLI |
-| `secure-review pr` | GitHub Action entry point: static **review**, or **`attack`** / **`attack-ai`** + optional **ZAP** / **Nuclei** (`action.yml` inputs) |
+| `secure-review pr` | GitHub Action entry point: static multi-model **review** with PR inline comments (see `action.yml`) |
 
 > **One key is enough.** You don't need keys for all three providers — secure-review runs with as few as **one reader**, as long as the writer also uses an enabled provider. Disable any provider during `init` (or remove its entry from `.secure-review.yml`) and the tool simply doesn't instantiate that provider. This is useful if you only have an OpenAI key, or want to keep cost down to a single provider.
 
@@ -91,38 +91,6 @@ jobs:
 ```
 
 Open a PR — a single review is posted, with inline comments for findings that land on GitHub-commentable diff lines and summary text for changed-file findings outside those lines.
-
-### Runtime pentest-style job in Actions (`attack`, `attack-ai`, ZAP, Nuclei)
-
-The same composite action accepts **`inputs.mode`** (**`attack`** or **`attack-ai`**) plus **`inputs.target-url`**. Typical pattern: install deps, boot your app (`npm start &`), wait on `/health`, then run the step. Optional **`pentest-scanners`** runs **OWASP ZAP baseline** in Docker (**`docker` must be available** on the runner) and/or **`nuclei`** (install in a prior step or use `projectdiscovery/nuclei` image). **`browser-login-script`** points at **your** repo script (`node`), last stdout line **`{"headers":{"Cookie":"…"}}`** — embed Playwright there if you need real browser flows. **`auth-headers-json`**/`secrets` supply Bearer tokens without echoing markdown.
-
-```yaml
-  runtime-scan:
-    runs-on: ubuntu-latest
-    needs: []
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20 }
-      - run: npm ci && npm install -g nuclei nuclei-templates  # or use aqua-installer etc.
-      - run: npm start &
-      - run: npx wait-on http://localhost:3000/health --timeout 120000 || sleep 60
-      - uses: fonCki/secure-review@v1 # pin SHA in prod
-        with:
-          mode: attack-ai
-          target-url: http://localhost:3000
-          pentest-scanners: zap-baseline,nuclei
-          runtime-timeout-seconds: '900'
-          # browser-login-script: scripts/ci/playwright-headers.mjs  # prints JSON headers
-          # auth-headers-json: ${{ secrets.CI_PROBE_HEADERS_JSON }}
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
-          GOOGLE_API_KEY:    ${{ secrets.GOOGLE_API_KEY }}
-          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
-```
-
-See **`action.yml`** for the authoritative input list (`runtime-mode`, `pentest-scanners`, `browser-login-script`, etc.).
 
 ### Setting GitHub Action secrets
 
@@ -197,28 +165,8 @@ gates:
   max_cost_usd: 20
   max_wall_time_minutes: 15
 
-dynamic:
-  enabled: false
-  target_url: http://localhost:3000
-  healthcheck_url: http://localhost:3000/health
-  timeout_seconds: 30
-  max_requests: 50
-  rate_limit_per_second: 2
-  max_crawl_pages: 20
-  attacker:
-    provider: anthropic
-    model: claude-sonnet-4-6
-    skill: skills/authorized-attack-simulator.md
-  checks: [headers, cookies, cors, sensitive_paths]
-  sensitive_paths: [/.env, /.git/config, /config.json, /debug, /swagger.json, /openapi.json]
-  gates:
-    block_on_confirmed_critical: true
-    block_on_confirmed_high: false
-  # Optional: send Cookie / Authorization on every Layer 4 request (attack, attack-ai,
-  # fix+attack-ai). Same keys can be overridden per run with `-H` / `--attack-header`.
-  # Do not commit real sessions — use CI secrets or a gitignored overlay.
-  # auth_headers:
-  #   Cookie: "session=..."
+# Optional `dynamic:` block — preserved for YAML compatibility; runtime probing lives in
+# `secure-review-runtime`, not in core CLI modes.
 ```
 
 Every reviewer is a `{provider, model, skill}` triple. Skills are Markdown files defining the reviewer's role (web-sec pen-tester, OWASP auditor, supply-chain specialist, etc.). Write your own by copying `skills/*.md`.
@@ -274,9 +222,6 @@ secure-review fix ./src --max-iterations 3 --max-cost-usd 20
 secure-review fix ./src --since main                  # only files changed since `main`
 secure-review fix ./src --baseline ./baseline.json    # use a specific baseline file
 secure-review fix ./src --yes --no-estimate           # CI-friendly: skip prompt + skip preview
-secure-review fix ./src --attack-target-url http://localhost:3000   # bookend attack-ai (initial + final)
-secure-review fix ./src --attack-target-url http://localhost:3000 --attack-every-iter   # re-test live app every iteration
-secure-review fix ./src --attack-target-url http://localhost:3000 --attack-provider google --attack-model gemini-2.5-pro
 ```
 
 The mode that actually fixes things. Three phases:
@@ -300,46 +245,10 @@ The writer is **always the same model**; the verifier rotates. This prevents the
 - **Divergence detection** — if total findings grow for 2 consecutive iterations, the loop stops to prevent regression spirals (the F2 failure mode).
 - **Filtering** — configure `min_confidence_to_fix` and `min_severity_to_fix` in the config to limit what the writer attempts (e.g. only fix HIGH+ findings with ≥50% confidence).
 - **Incremental mode** — `--since <ref>` restricts the entire pipeline (SAST + readers + writer + final verification) to files Git reports as changed since that ref.
-- **Runtime-aware fix loop (attack-ai integration)** — pass `--attack-target-url <url>` to add the AI attack simulator into the loop. Use `--attack-header "Cookie: ..."` (repeatable) so crawl/probes hit logged-in surfaces; merges over `dynamic.auth_headers`. With the default `bookend` cadence the simulator runs once before iter 1 (its confirmed runtime findings are merged into the writer's first to-do list) and once after final static verification (so the report shows the runtime delta). Use `--attack-every-iter` to re-test the running app after every writer pass; the verifier sees a fresh runtime audit on the same revision the static reviewer just looked at. Convergence is **additive**: the loop only exits early when both static reviewers AND runtime probes are clean for a full rotation. Override the live attacker's budget with `--attack-max-requests`, `--attack-max-crawl-pages`, `--attack-rate-limit-per-second`, `--attack-timeout-seconds`. Choose a **different** attacker model than the writer/reviewers with `--attack-provider` (`anthropic` \| `openai` \| `google`), `--attack-model <id>`, and optionally `--attack-skill <path>` (relative to the config file or absolute); unset fields still come from `dynamic.attacker` or `writer` in YAML. `--no-attack` disables the integration even if `dynamic.target_url` is set in the config.
 
 > Earlier versions (pre-0.5.0) used a different loop: each iteration's reviewer scanned alone, single-reviewer-zero exited the loop early, and the initial scan was a vanity baseline metric. See [CHANGELOG.md](CHANGELOG.md) for the migration notes.
 
 Output: `reports/fix-<timestamp>.{md,html,json}` plus the unified diff (`fix-<timestamp>.patch`) and modified source files. The HTML report adds a before/after delta block and a per-iteration timeline with the resolved/introduced split per iteration — useful for thesis presentations and code-review walk-throughs.
-
-### `attack` — Layer 4 runtime probes
-
-```bash
-secure-review attack . --target-url http://localhost:3000
-secure-review attack . --target-url http://localhost:3000 --checks headers,cors
-secure-review attack . --target-url http://localhost:3000 -H "Cookie: session=YOUR_SESSION"
-```
-
-Runs deterministic HTTP probes against a live target URL. This is not autonomous exploitation; it is a runtime evidence layer for the defense-in-depth pipeline:
-
-- **headers** — missing CSP, clickjacking protection, nosniff, and (for HTTPS) HSTS.
-- **cookies** — missing `HttpOnly`, `Secure` (HTTPS only), and `SameSite` on `Set-Cookie` headers.
-- **cors** — wildcard or reflected untrusted Origin (`https://secure-review.invalid`), including credentialed CRITICAL cases.
-- **sensitive_paths** — exposed deployment artifacts such as `/.env`, `/.git/config`, `/config.json`, `/debug`, `/swagger.json`, `/openapi.json`.
-
-Findings are runtime-confirmed where the probe observed the behavior. Response headers, request headers, status codes, and redacted response snippets are written into the JSON evidence. Dynamic gates can fail the command with exit code 2 when confirmed CRITICAL/HIGH runtime findings are present.
-
-**Authenticated routes:** set `dynamic.auth_headers` in YAML (e.g. `Cookie`, `Authorization`) and/or pass repeatable `-H "Name: value"` on `attack` / `attack-ai`. CLI headers override config for the same name. For `fix ... --attack-target-url`, use repeatable `--attack-header "Name: value"`.
-
-Output: `reports/attack-<timestamp>.{md,json}`.
-
-### `attack-ai` — authorized AI attack simulator
-
-```bash
-secure-review attack-ai . --target-url http://localhost:3000
-secure-review attack-ai . --target-url http://localhost:3000 --max-requests 25 --max-crawl-pages 10
-secure-review attack-ai . --target-url http://localhost:3000 --attack-provider openai --attack-model gpt-4.1
-```
-
-Runs a bounded same-origin crawl, asks the configured attacker model (`dynamic.attacker`, or `writer` as a fallback) to propose a small set of safe hypotheses, then executes only constrained GET/POST probes with harmless marker payloads. Per-run overrides: `--attack-provider`, `--attack-model`, and `--attack-skill` merge the same way as in `fix` mode (each flag replaces only that field; the rest still come from YAML). The runner rejects out-of-origin URLs, malformed parameter names, destructive methods, shell/SSRF-style requests, and anything beyond `dynamic.max_requests` / `dynamic.rate_limit_per_second`.
-
-Current probe categories are `reflected_input`, `error_disclosure`, `open_redirect`, and `path_exposure`. A finding is emitted only when runtime evidence confirms the hypothesis, with `reportedBy: ["attack-ai"]`, confidence `1`, redacted response snippets, and optional `sourceFile` / `lineStart` hints from the model so the writer knows where to patch.
-
-Output: `reports/attack-ai-<timestamp>.{md,json}`. Use this after `fix` to re-test a running app and verify that a suspected vulnerability is actually gone.
 
 ### `benchmark` — compare writer models
 
@@ -434,7 +343,7 @@ Every run emits a self-contained JSON with per-iteration counts and severity bre
 
 The same schema is used by both `review` and `fix` modes. Review-only runs use `condition: "F-review"` and set the before/after finding counts to the same values because no fixes are applied.
 
-Runtime-only runs use `condition: "F-attack"` (deterministic probes) or `condition: "F-attack-ai"` (bounded crawl + model-planned safe probes). See `reports/*-<timestamp>.json` after each run.
+Runtime evidence JSON from **`secure-review-runtime`** uses `condition: "F-attack"` or `"F-attack-ai"`; see that package’s docs.
 
 ## Developing and verifying
 
@@ -445,8 +354,7 @@ Use this checklist when you change the tool or want confidence it behaves as doc
 ```bash
 npm install
 npm run typecheck          # TypeScript — catches broken imports/types
-npm test                   # Vitest — CLI, schema, reporters, attack / attack-ai HTTP fixtures, fix+attack-ai integration (mocked LLMs)
-npm run test:attack-loop   # optional focused file: fix-mode rotation / convergence with mocked adapters
+npm test                   # Vitest — CLI, schema, reporters, core modes (mocked LLMs)
 npm run build              # library (dist/) — what `npx secure-review` runs via bin
 npm run build:action       # GitHub Action bundle (dist-action/index.js) — commit when src/ changes affect the action
 ```
@@ -460,13 +368,13 @@ Most tests mock LLM adapters and spin short-lived HTTP servers on `127.0.0.1`; t
 | CLI loads | `npx secure-review --help` |
 | Config + SAST path only | `npx secure-review scan ./src` (prints JSON summary to stdout; no report files) |
 | Cost math only | `npx secure-review estimate ./src --mode review` or `--mode fix` |
-| Deterministic runtime probes | With your app listening: `npx secure-review attack . --target-url http://localhost:<port>` → `reports/attack-*.{md,json}`; exit code **2** if dynamic gates fail on confirmed CRITICAL/HIGH |
+| Runtime probes (optional) | Use **`secure-review-runtime`** against a live app — see that package’s README |
 
 After editing TypeScript under `src/`, run `npm run build` before expecting `npx secure-review` to pick up those changes (unless you invoke `node dist/cli.js` from a fresh build).
 
 ### End-to-end with real models
 
-Requires provider keys in `.env` and consumes quota: `review`, `fix`, `attack-ai`, or `fix ... --attack-target-url ...`. Inspect generated JSON under `reports/` and cross-check behavior with the mode pseudo-code in [WORKFLOW.md](WORKFLOW.md).
+Requires provider keys in `.env` and consumes quota for AI-backed modes (`review`, `fix`, etc.). Inspect generated JSON under `reports/` and cross-check behavior with the mode pseudo-code in [WORKFLOW.md](WORKFLOW.md).
 
 ## License
 

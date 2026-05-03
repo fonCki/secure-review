@@ -400,12 +400,6 @@ gates:
   block_on_new_critical: true
   max_cost_usd: 5
   max_wall_time_minutes: 15
-
-dynamic:
-  attacker:
-    provider: ${a.writerProvider}
-    model: ${a.writerModel}
-    skill: ${skillsBase}/authorized-attack-simulator.md
 `;
 }
 

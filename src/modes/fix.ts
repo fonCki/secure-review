@@ -1,6 +1,5 @@
 import { getAdapter } from '../adapters/factory.js';
-import type { ModelAdapter } from '../adapters/types.js';
-import type { Env, ModelRef, SecureReviewConfig } from '../config/schema.js';
+import type { Env, SecureReviewConfig } from '../config/schema.js';
 import { loadSkill, resolveSkillPath } from '../config/load.js';
 import { aggregate, severityBreakdown } from '../findings/aggregate.js';
 import { applyBaseline, type Baseline } from '../findings/baseline.js';
@@ -19,38 +18,6 @@ import { summarizeReviewHealth, type ReviewHealthStatus } from '../util/review-h
 import { spinner } from '../util/spinner.js';
 import { resolve } from 'node:path';
 import { rm } from 'node:fs/promises';
-import { runAttackAiMode, type AttackAiModeOutput } from './attack-ai.js';
-
-export type AttackCadence = 'bookend' | 'every';
-
-export interface AttackAiHookConfig {
-  /** Live target URL the attacker model probes. Required to enable attack phases. */
-  targetUrl: string;
-  /** When to run attack-ai relative to the fix loop. Default: bookend. */
-  cadence: AttackCadence;
-  timeoutSeconds?: number;
-  maxRequests?: number;
-  maxCrawlPages?: number;
-  rateLimitPerSecond?: number;
-  /** Optional preconstructed adapter (test seam). */
-  attackerAdapter?: ModelAdapter;
-  /** Optional preloaded skill prompt (test seam). */
-  attackerSkill?: string;
-  /** Override attacker provider (merged onto `dynamic.attacker` or writer). */
-  attackerProvider?: ModelRef['provider'];
-  /** Override attacker model id. */
-  attackerModel?: string;
-  /** Override skill path (relative to config dir or absolute). */
-  attackerSkillPath?: string;
-  /** Runtime probe headers (merged over `dynamic.auth_headers`). */
-  authHeaders?: Record<string, string>;
-}
-
-export interface RuntimeAttackPhase {
-  /** Phase identifier — 'initial', 'iteration-N' (1-based), or 'final'. */
-  phase: string;
-  output: AttackAiModeOutput;
-}
 
 export interface FixModeInput {
   root: string;
@@ -61,8 +28,6 @@ export interface FixModeInput {
   only?: Set<string>;
   /** If set, findings whose fingerprint matches a baseline entry are suppressed. */
   baseline?: Baseline;
-  /** If set, attack-ai runs alongside the static loop and feeds the writer. */
-  attack?: AttackAiHookConfig;
 }
 
 /**
@@ -91,10 +56,6 @@ export interface IterationRecord {
   newCritical: number;
   resolved: number;
   costUSD: number;
-  /** Runtime findings the attacker confirmed during this iteration (if attack ran). */
-  runtimeFindings?: Finding[];
-  /** Phase identifier of the attack run captured for this iteration, if any. */
-  runtimeAttackPhase?: string;
 }
 
 export interface FixModeOutput {
@@ -114,12 +75,6 @@ export interface FixModeOutput {
   verification?: ReviewerRunOutput[];
   /** Findings suppressed by the baseline at any phase (initial + each iteration + final). */
   baselineSuppressed: Finding[];
-  /** Per-phase attack-ai runs (initial / each iteration / final) when attack hook is enabled. */
-  runtimeAttacks?: RuntimeAttackPhase[];
-  /** Confirmed runtime findings observed in the initial attack phase. */
-  initialRuntimeFindings?: Finding[];
-  /** Confirmed runtime findings observed in the final attack phase. */
-  finalRuntimeFindings?: Finding[];
 }
 
 // ---------------------------------------------------------------------------
@@ -204,7 +159,7 @@ export function filterFindingsForWriter(
  *      still see issues.
  */
 export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
-  const { root, config, configDir, env, only, baseline, attack } = input;
+  const { root, config, configDir, env, only, baseline } = input;
   const start = Date.now();
 
   // Stable IDs across iterations: same bug → same `S-NNN` even when the
@@ -222,49 +177,9 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
     }
   };
 
-  // Runtime evidence from attack-ai (optional). When enabled, the loop's
-  // convergence becomes additive: static reviewers AND runtime probes must
-  // both be clean for the early exit to fire.
-  const runtimeAttacks: RuntimeAttackPhase[] = [];
-  let lastRuntimeFindings: Finding[] = [];
-  let initialRuntimeFindings: Finding[] | undefined;
-  let finalRuntimeFindings: Finding[] | undefined;
-  const runAttackPhase = async (phase: string): Promise<Finding[]> => {
-    if (!attack) return [];
-    log.header(`Runtime attack — ${phase} (target: ${attack.targetUrl})`);
-    const out = await runAttackAiMode({
-      root,
-      config,
-      configDir,
-      env,
-      targetUrl: attack.targetUrl,
-      timeoutSeconds: attack.timeoutSeconds,
-      maxRequests: attack.maxRequests,
-      maxCrawlPages: attack.maxCrawlPages,
-      rateLimitPerSecond: attack.rateLimitPerSecond,
-      attackerAdapter: attack.attackerAdapter,
-      attackerSkill: attack.attackerSkill,
-      attackerProvider: attack.attackerProvider,
-      attackerModel: attack.attackerModel,
-      attackerSkillPath: attack.attackerSkillPath,
-      authHeaders: attack.authHeaders,
-    });
-    runtimeAttacks.push({ phase, output: out });
-    log.info(
-      `  ${phase}: ${out.findings.length} runtime finding${out.findings.length === 1 ? '' : 's'} ` +
-        `· ${out.probes.filter((p) => p.confirmed).length}/${out.probes.length} probes confirmed ` +
-        `· $${out.totalCostUSD.toFixed(3)}`,
-    );
-    const filtered = applyBaseline(out.findings, baseline);
-    collectSuppressed(filtered.suppressed);
-    const annotated = registry.annotate(filtered.kept);
-    lastRuntimeFindings = annotated;
-    return annotated;
-  };
-
   log.header(`Fix mode — ${root}${only ? ` (incremental: ${only.size} file${only.size === 1 ? '' : 's'})` : ''}`);
   log.info(
-    `Rotation: ${config.fix.mode} · max ${config.fix.max_iterations} iterations · ${config.reviewers.length} reviewers${baseline ? ` · baseline: ${baseline.entries.length} accepted` : ''}${attack ? ` · attack-ai cadence: ${attack.cadence}` : ''}`,
+    `Rotation: ${config.fix.mode} · max ${config.fix.max_iterations} iterations · ${config.reviewers.length} reviewers${baseline ? ` · baseline: ${baseline.entries.length} accepted` : ''}`,
   );
 
   const reviewerInstances = await Promise.all(
@@ -341,21 +256,9 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
     `Initial findings (union of ${N} reader${N === 1 ? '' : 's'} + SAST): ${initialFindings.length} (${formatBreakdown(severityBreakdown(initialFindings))})`,
   );
 
-  // Initial runtime evidence: runs once before the loop regardless of cadence,
-  // so the writer's first to-do list includes both static and runtime findings.
-  if (attack) {
-    initialRuntimeFindings = await runAttackPhase('initial');
-    totalCost += runtimeAttacks[runtimeAttacks.length - 1]?.output.totalCostUSD ?? 0;
-  }
-
   // The writer's first to-do list IS the union — no reader's blind spots
   // get a free pass to skip iteration 1.
-  let currentFindings = mergeWithRuntime(initialFindings, initialRuntimeFindings ?? [], registry);
-  if (initialRuntimeFindings && initialRuntimeFindings.length > 0) {
-    log.info(
-      `Initial runtime evidence merged: ${initialRuntimeFindings.length} confirmed finding${initialRuntimeFindings.length === 1 ? '' : 's'} added to writer queue`,
-    );
-  }
+  let currentFindings = initialFindings;
 
   const iterations: IterationRecord[] = [];
   const allChangedFiles = new Set<string>();
@@ -457,25 +360,7 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
       collectSuppressed(afterFiltered.suppressed);
       const staticFindingsAfter = registry.annotate(afterFiltered.kept);
 
-      // attack-ai re-probe (cadence === 'every'): re-test the running app
-      // after the writer's changes so confirmed runtime findings join the
-      // verifier's view and feed the next iteration.
-      let iterationRuntimeFindings: Finding[] | undefined;
-      let iterationRuntimePhase: string | undefined;
-      if (attack && attack.cadence === 'every') {
-        iterationRuntimePhase = `iteration-${i + 1}`;
-        iterationRuntimeFindings = await runAttackPhase(iterationRuntimePhase);
-        totalCost += runtimeAttacks[runtimeAttacks.length - 1]?.output.totalCostUSD ?? 0;
-      } else if (attack) {
-        // Bookend cadence: carry forward the latest runtime findings (initial)
-        // so additive convergence still requires runtime to be clean.
-        iterationRuntimeFindings = lastRuntimeFindings;
-      }
-      const findingsAfter = mergeWithRuntime(
-        staticFindingsAfter,
-        iterationRuntimeFindings ?? [],
-        registry,
-      );
+      const findingsAfter = staticFindingsAfter;
       const diff = diffFindings(findingsToFix, findingsAfter);
       const newCritical = diff.introduced.filter((f) => f.severity === 'CRITICAL').length;
 
@@ -505,8 +390,6 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
             newCritical,
             resolved: diff.resolved.length,
             costUSD: (writerRun?.usage.costUSD ?? 0) + verifierRun.usage.costUSD,
-            runtimeFindings: iterationRuntimeFindings,
-            runtimeAttackPhase: iterationRuntimePhase,
           });
           currentFindings = findingsAfter;
           break;
@@ -530,8 +413,6 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
         newCritical,
         resolved: diff.resolved.length,
         costUSD: (writerRun?.usage.costUSD ?? 0) + verifierRun.usage.costUSD,
-        runtimeFindings: iterationRuntimeFindings,
-        runtimeAttackPhase: iterationRuntimePhase,
       });
 
       // Gates
@@ -566,9 +447,6 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
 
       // Early exit: only when a FULL ROTATION of readers all see clean.
       // Prevents a single lenient reader from prematurely ending the loop.
-      // Additive convergence: when attack-ai is enabled, runtime findings
-      // must also be clean. `findingsAfter` already includes them via
-      // `mergeWithRuntime`, so this single check covers both signals.
       if (findingsAfter.length === 0) {
         consecutiveCleanIters += 1;
         if (consecutiveCleanIters >= N) {
@@ -642,7 +520,7 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
     const combinedFiltered = applyBaseline(combinedAggregated, baseline);
     collectSuppressed(combinedFiltered.suppressed);
     const staticCombined = registry.annotate(combinedFiltered.kept);
-    const combined = mergeWithRuntime(staticCombined, lastRuntimeFindings, registry);
+    const combined = staticCombined;
     log.info(`Verification by ${verifiers.length} reviewer(s): ${combined.length} findings remaining`);
     const postFinalGate = evaluateGates(
       {
@@ -660,15 +538,6 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
       gateReasons = mergeGateReasons(gateReasons, postFinalGate.reasons);
     }
     currentFindings = combined;
-  }
-
-  // Final runtime evidence: runs once at the end regardless of static
-  // final_verification setting, so the report always shows a start/end
-  // runtime delta when attack-ai is enabled.
-  if (attack && !gateBlocked) {
-    finalRuntimeFindings = await runAttackPhase('final');
-    totalCost += runtimeAttacks[runtimeAttacks.length - 1]?.output.totalCostUSD ?? 0;
-    currentFindings = mergeWithRuntime(currentFindings, finalRuntimeFindings, registry);
   }
 
   const verificationRuns = verification ?? [];
@@ -704,25 +573,7 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
     totalDurationMs: Date.now() - start,
     verification,
     baselineSuppressed: baselineSuppressedAll,
-    runtimeAttacks: attack ? runtimeAttacks : undefined,
-    initialRuntimeFindings,
-    finalRuntimeFindings,
   };
-}
-
-/**
- * Merge static findings with runtime evidence so the writer sees both as a
- * single to-do list, with the runtime hits getting `attack-ai` corroboration
- * (and stable IDs) wherever they fall in the same `{file, line-bucket}`.
- */
-function mergeWithRuntime(
-  staticFindings: Finding[],
-  runtimeFindings: Finding[],
-  registry: FindingRegistry,
-): Finding[] {
-  if (runtimeFindings.length === 0) return staticFindings;
-  const aggregated = aggregate([...staticFindings, ...runtimeFindings]);
-  return registry.annotate(aggregated);
 }
 
 function pickReviewer<T>(reviewers: T[], iteration: number, mode: SecureReviewConfig['fix']['mode']): T {

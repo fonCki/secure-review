@@ -95,7 +95,6 @@ export function renderFixHtml(output: FixModeOutput): string {
     }),
     beforeAfterSection(output.initialBreakdown, output.finalBreakdown, output.initialFindings.length, output.finalFindings.length),
     iterationsSection(output.iterations),
-    runtimeAttacksSection(output),
     filesChangedSection(output.filesChanged),
     findingsSection(output.finalFindings, 'Remaining findings'),
   ].join('\n');
@@ -348,37 +347,6 @@ function filesChangedSection(files: string[]): string {
   return `<section class="card pad">
     <h2>Files changed (${files.length})</h2>
     <ul class="filelist">${files.map((f) => `<li><code>${escapeHtml(f)}</code></li>`).join('')}</ul>
-  </section>`;
-}
-
-function runtimeAttacksSection(output: FixModeOutput): string {
-  if (!output.runtimeAttacks || output.runtimeAttacks.length === 0) return '';
-  const rows = output.runtimeAttacks
-    .map((phase) => {
-      const o = phase.output;
-      const confirmed = o.probes.filter((p) => p.confirmed).length;
-      return `<tr>
-        <td><code>${escapeHtml(phase.phase)}</code></td>
-        <td><code>${escapeHtml(o.targetUrl)}</code></td>
-        <td class="num">${o.pages.length}</td>
-        <td class="num">${o.hypotheses.length}</td>
-        <td class="num">${confirmed}/${o.probes.length}</td>
-        <td class="num ${o.findings.length > 0 ? 'bad' : 'flat'}">${o.findings.length}</td>
-        <td class="num">$${o.totalCostUSD.toFixed(3)}</td>
-      </tr>`;
-    })
-    .join('\n');
-  const initial = output.initialRuntimeFindings?.length ?? 0;
-  const final = output.finalRuntimeFindings?.length ?? initial;
-  const delta = final - initial;
-  const deltaCls = delta < 0 ? 'good' : delta > 0 ? 'bad' : 'flat';
-  return `<section class="card pad">
-    <h2>Runtime attack phases (attack-ai)</h2>
-    <table>
-      <thead><tr><th>Phase</th><th>Target</th><th>Pages</th><th>Hypotheses</th><th>Probes (confirmed/total)</th><th>Findings</th><th>Cost</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    <p class="muted small">Runtime delta: <strong class="${deltaCls}">${initial} → ${final}</strong> confirmed runtime finding${final === 1 ? '' : 's'}.</p>
   </section>`;
 }
 

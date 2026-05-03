@@ -1,6 +1,6 @@
 {
   "name": "secure-review",
-  "version": "0.5.13",
+  "version": "1.0.0",
   "description": "Multi-model security review for AI-generated code. Runs OpenAI, Anthropic, and Google reviewers in parallel and posts findings as PR comments.",
   "keywords": [
     "security",
@@ -56,9 +56,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src test",
     "clean": "rm -rf dist dist-action coverage",
-    "test:attack-loop": "vitest run test/attack-review-loop-live-apps.test.ts",
     "secure-review": "node dist/cli.js",
-    "check:all": "npm run lint && npm run typecheck && npm test && npm run test:attack-loop"
+    "check:all": "npm run lint && npm run typecheck && npm test"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.33.0",

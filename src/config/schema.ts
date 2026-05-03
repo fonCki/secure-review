@@ -76,9 +76,8 @@ export const DynamicConfig = z.object({
       block_on_confirmed_high: false,
     }),
   /**
-   * Extra request headers on every Layer 4 HTTP request (`attack`, `attack-ai`, fix + attack-ai).
-   * Use for session cookies or Bearer tokens so probes hit authenticated routes.
-   * Prefer CI secrets or a gitignored overlay — do not commit real credentials.
+   * Optional headers for future runtime tooling. Core `secure-review` is static-only;
+   * use `secure-review-runtime` for live probes. Kept for config compatibility.
    */
   auth_headers: z.record(z.string(), z.string()).optional(),
 });
