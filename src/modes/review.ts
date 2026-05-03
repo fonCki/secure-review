@@ -5,7 +5,7 @@ import { aggregate, severityBreakdown } from '../findings/aggregate.js';
 import { applyBaseline, type Baseline } from '../findings/baseline.js';
 import type { Finding, SeverityBreakdown } from '../findings/schema.js';
 import { runReviewer, type ReviewerRunOutput } from '../roles/reviewer.js';
-import { runAllSast, type SastSummary } from '../sast/index.js';
+import { filterSastByPaths, runAllSast, type SastSummary } from '../sast/index.js';
 import { normalizeFindingPaths, readSourceTree } from '../util/files.js';
 import { log } from '../util/logger.js';
 import { summarizeReviewHealth, type ReviewHealthStatus } from '../util/review-health.js';
@@ -56,6 +56,13 @@ export async function runReviewMode(input: ReviewModeInput): Promise<ReviewModeO
     logSastSummary(sast);
   } else {
     sast = await runAllSast(root, config.sast);
+  }
+  // Bug 9 (PR #3 audit): SAST tools (semgrep / eslint / npm-audit) scan the
+  // FULL scan-root regardless of `--since`, so without this filter SAST
+  // findings from files outside the incremental subset would leak into the
+  // aggregated set. README claims `--since` restricts the whole pipeline.
+  if (only && only.size > 0) {
+    sast = filterSastByPaths(sast, only);
   }
 
   // 3. Build context for reviewers

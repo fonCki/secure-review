@@ -1,0 +1,100 @@
+import { describe, it, expect } from 'vitest';
+import { filterSastByPaths, type SastSummary } from '../src/sast/index.js';
+import type { Finding } from '../src/findings/schema.js';
+
+/**
+ * Bug 9 (PR #3 audit): SAST tools (semgrep / eslint / npm-audit) had no
+ * `--since` awareness. They scan the full root and return findings for
+ * every file regardless of `only`. The fix: post-filter the SastSummary
+ * by membership in `only`.
+ */
+
+function mkFinding(file: string, reportedBy: string[], severity: Finding['severity'] = 'MEDIUM'): Finding {
+  return {
+    id: 'F-00',
+    severity,
+    file,
+    lineStart: 1,
+    lineEnd: 1,
+    title: 't',
+    description: 'd',
+    reportedBy,
+    confidence: 0.5,
+  };
+}
+
+describe('filterSastByPaths — Bug 9', () => {
+  it('returns the summary unchanged when `only` is empty', () => {
+    const summary: SastSummary = {
+      findings: [mkFinding('src/a.ts', ['semgrep'])],
+      semgrep: { ran: true, count: 1 },
+      eslint: { ran: false, count: 0 },
+      npmAudit: { ran: false, count: 0 },
+    };
+    const result = filterSastByPaths(summary, new Set());
+    expect(result).toBe(summary); // identity, no copy needed
+  });
+
+  it('drops findings whose file is not in the `only` set', () => {
+    const summary: SastSummary = {
+      findings: [
+        mkFinding('src/a.ts', ['semgrep']),       // outside `only`
+        mkFinding('src/b.ts', ['semgrep']),       // inside `only`
+        mkFinding('docs/README.md', ['eslint']),  // outside `only`
+      ],
+      semgrep: { ran: true, count: 2 },
+      eslint: { ran: true, count: 1 },
+      npmAudit: { ran: false, count: 0 },
+    };
+    const result = filterSastByPaths(summary, new Set(['src/b.ts']));
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]?.file).toBe('src/b.ts');
+    // Per-tool counts must reflect the post-filter findings, not the
+    // original full-tree counts.
+    expect(result.semgrep.count).toBe(1);
+    expect(result.eslint.count).toBe(0);
+  });
+
+  it('preserves the per-tool ran/error fields untouched', () => {
+    const summary: SastSummary = {
+      findings: [mkFinding('src/a.ts', ['semgrep'])],
+      semgrep: { ran: true, count: 1, error: undefined },
+      eslint: { ran: false, count: 0, error: 'eslint not installed' },
+      npmAudit: { ran: true, count: 0 },
+    };
+    const result = filterSastByPaths(summary, new Set(['src/a.ts']));
+    expect(result.eslint.ran).toBe(false);
+    expect(result.eslint.error).toBe('eslint not installed');
+    expect(result.semgrep.ran).toBe(true);
+    expect(result.npmAudit.ran).toBe(true);
+  });
+
+  it('handles npm-audit findings (which use `npm-audit` or `npm_audit` in reportedBy)', () => {
+    const summary: SastSummary = {
+      findings: [
+        mkFinding('package.json', ['npm-audit']),
+        mkFinding('package.json', ['npm_audit']),
+        mkFinding('src/a.ts', ['semgrep']),
+      ],
+      semgrep: { ran: true, count: 1 },
+      eslint: { ran: false, count: 0 },
+      npmAudit: { ran: true, count: 2 },
+    };
+    const result = filterSastByPaths(summary, new Set(['package.json']));
+    expect(result.findings).toHaveLength(2);
+    expect(result.npmAudit.count).toBe(2);
+    expect(result.semgrep.count).toBe(0);
+  });
+
+  it('drops everything if no findings match `only`', () => {
+    const summary: SastSummary = {
+      findings: [mkFinding('src/a.ts', ['semgrep'])],
+      semgrep: { ran: true, count: 1 },
+      eslint: { ran: false, count: 0 },
+      npmAudit: { ran: false, count: 0 },
+    };
+    const result = filterSastByPaths(summary, new Set(['src/b.ts']));
+    expect(result.findings).toHaveLength(0);
+    expect(result.semgrep.count).toBe(0);
+  });
+});

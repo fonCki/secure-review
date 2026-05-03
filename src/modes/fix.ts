@@ -10,7 +10,7 @@ import { SEVERITY_ORDER } from '../findings/schema.js';
 import { evaluateGates } from '../gates/evaluate.js';
 import { runReviewer, type ReviewerRunOutput } from '../roles/reviewer.js';
 import { runWriter, type WriterRunOutput } from '../roles/writer.js';
-import { runAllSast } from '../sast/index.js';
+import { filterSastByPaths, runAllSast, type SastSummary } from '../sast/index.js';
 import { normalizeFindingPaths, normalizeRelPath, readSourceTree, writeFileSafe } from '../util/files.js';
 import type { FileContent } from '../util/files.js';
 import { log } from '../util/logger.js';
@@ -201,7 +201,13 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
   // 1) INITIAL UNION SCAN — all readers in parallel + SAST.
   const initialFiles = await readSourceTree(root, 200_000, only);
   const sastSpinner = spinner('Initial scan: SAST (semgrep + eslint + npm-audit)');
-  const initialSast = await runAllSast(root, config.sast);
+  // Bug 9 (PR #3 audit): SAST tools have no native --since support, so we
+  // run full-tree and post-filter to the incremental set. Without this,
+  // SAST findings from outside the changed file set would (a) leak into
+  // aggregation, breaking --since semantics, and (b) populate
+  // `allowedFiles` with paths the writer might touch and rollback might
+  // mistakenly delete (Bug 3). See `runFilteredSast` helper below.
+  const initialSast = await runFilteredSast(root, config.sast, only);
   sastSpinner.succeed(
     `Initial SAST: ${initialSast.findings.length} finding${initialSast.findings.length === 1 ? '' : 's'}`,
   );
@@ -296,7 +302,7 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
       const beforeFiles = await readSourceTree(root, 200_000, only);
       // Improvement 3: snapshot files before writer runs so we can roll back
       const preWriterSnapshot = snapshotFiles(beforeFiles);
-      const sastBeforeRun = await runAllSast(root, config.sast);
+      const sastBeforeRun = await runFilteredSast(root, config.sast, only);
       const allowedFiles = new Set<string>([
         ...beforeFiles.map((f) => normalizeRelPath(f.relPath)),
         ...findingsToFix.map((f) => normalizeRelPath(f.file)),
@@ -338,7 +344,7 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
 
       // Verifier audits whatever state we're in now (post-writer or unchanged).
       const afterFiles = await readSourceTree(root, 200_000, only);
-      const sastAfterRun = await runAllSast(root, config.sast);
+      const sastAfterRun = await runFilteredSast(root, config.sast, only);
       const vSpinner = spinner(`Verifier ${verifier.ref.name} auditing post-fix code`);
       const verifierRun = normalizeReviewerRun(
         await runReviewer({
@@ -477,7 +483,7 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
   if (!gateBlocked && config.fix.final_verification !== 'none') {
     log.header('Final verification');
     const finalFiles = await readSourceTree(root, 200_000, only);
-    const finalSast = await runAllSast(root, config.sast);
+    const finalSast = await runFilteredSast(root, config.sast, only);
     const verifiers =
       config.fix.final_verification === 'all_reviewers'
         ? reviewerInstances
@@ -568,6 +574,21 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
     verification,
     baselineSuppressed: baselineSuppressedAll,
   };
+}
+
+/**
+ * Run SAST and (optionally) post-filter to an incremental file set. Used at
+ * 4 sites in the fix loop (initial scan, sastBeforeRun, sastAfterRun, finalSast).
+ * Bug 9 (PR #3 audit) — see filterSastByPaths in src/sast/index.ts.
+ */
+async function runFilteredSast(
+  root: string,
+  sastConfig: SecureReviewConfig['sast'],
+  only: Set<string> | undefined,
+): Promise<SastSummary> {
+  const summary = await runAllSast(root, sastConfig);
+  if (only && only.size > 0) return filterSastByPaths(summary, only);
+  return summary;
 }
 
 function pickReviewer<T>(reviewers: T[], iteration: number, mode: SecureReviewConfig['fix']['mode']): T {
