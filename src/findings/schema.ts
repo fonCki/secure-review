@@ -52,6 +52,18 @@ export type SeverityBreakdown = z.infer<typeof SeverityBreakdownSchema>;
 export const EvidenceJsonSchema = z.object({
   task_id: z.string(),
   tool: z.string(), // e.g. "secure-review-cross-model"
+  /**
+   * Version of the secure-review package that produced this evidence.
+   * Read from package.json at runtime. Used for reproducibility — old vs new
+   * runs are distinguishable even when other fields are identical.
+   */
+  tool_version: z.string().optional(),
+  /**
+   * Identifier for the finding-fingerprint / dedup algorithm in use when this
+   * evidence was produced. Different algorithm = different `total_findings_*`
+   * counts for the same input. See `findings/identity.ts` for the constant.
+   */
+  fingerprint_algorithm: z.string().optional(),
   condition: z.string(), // e.g. "F"
   run: z.number().int(),
   timestamp: z.string(), // ISO-8601

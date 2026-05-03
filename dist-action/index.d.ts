@@ -2,7 +2,7 @@ export * from './config/schema.js';
 export { loadConfig, loadEnv, loadSkill, resolveSkillPath } from './config/load.js';
 export * from './findings/schema.js';
 export { parseFindings, extractJson } from './findings/parse.js';
-export { aggregate, severityBreakdown } from './findings/aggregate.js';
+export { aggregate, severityBreakdown, agreementCount } from './findings/aggregate.js';
 export { diffFindings } from './findings/diff.js';
 export { findingFingerprint, FindingRegistry } from './findings/identity.js';
 export { DEFAULT_BASELINE_FILENAME, applyBaseline, baselineFromFindings, loadBaseline, mergeBaseline, saveBaseline, } from './findings/baseline.js';
@@ -23,5 +23,7 @@ export type { ModelAdapter, CompleteInput, CompleteOutput, Usage } from './adapt
 export { estimateCost, knownModel } from './util/cost.js';
 export { estimateRunCost, formatEstimateText } from './util/estimate-cost.js';
 export type { CostEstimate, EstimateInput, EstimateMode, ModelEstimate } from './util/estimate-cost.js';
-export { readSourceTree, serializeCodeContext } from './util/files.js';
+export { readSourceTree, serializeCodeContext, writeFileSafe } from './util/files.js';
 export type { FileContent } from './util/files.js';
+export { log, setQuiet, setVerbose } from './util/logger.js';
+export { mergeAuthHeaders } from './util/request-headers.js';

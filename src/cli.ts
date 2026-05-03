@@ -385,6 +385,7 @@ async function main(): Promise<void> {
           taskId: opts.taskId,
           run: Number(opts.run),
           modelVersion: config.reviewers.map((r) => r.model).join('+'),
+          toolVersion: version,
           reviewerNames: config.reviewers.map((r) => r.name),
         });
         await writeFileSafe(jsonPath, JSON.stringify(evidence, null, 2));
@@ -485,6 +486,7 @@ async function main(): Promise<void> {
             taskId: opts.taskId,
             run: Number(opts.run),
             modelVersion: `${config.writer.model}|${config.reviewers.map((r) => r.model).join('+')}`,
+            toolVersion: version,
             reviewerNames: config.reviewers.map((r) => r.name),
           });
           await writeFileSafe(jsonPath, JSON.stringify(evidence, null, 2));

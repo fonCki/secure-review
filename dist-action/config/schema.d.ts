@@ -107,7 +107,7 @@ export declare const DynamicCheck: z.ZodEnum<["headers", "cookies", "cors", "sen
 export type DynamicCheck = z.infer<typeof DynamicCheck>;
 export declare const DynamicConfig: z.ZodObject<{
     enabled: z.ZodDefault<z.ZodBoolean>;
-    /** Optional runtime target. Can also be supplied with `secure-review attack --target-url`. */
+    /** Optional runtime target (used by `secure-review-runtime`; overridable with `--target-url` there). */
     target_url: z.ZodOptional<z.ZodString>;
     healthcheck_url: z.ZodOptional<z.ZodString>;
     timeout_seconds: z.ZodDefault<z.ZodNumber>;
@@ -334,7 +334,7 @@ export declare const SecureReviewConfigSchema: z.ZodObject<{
     }>>;
     dynamic: z.ZodDefault<z.ZodObject<{
         enabled: z.ZodDefault<z.ZodBoolean>;
-        /** Optional runtime target. Can also be supplied with `secure-review attack --target-url`. */
+        /** Optional runtime target (used by `secure-review-runtime`; overridable with `--target-url` there). */
         target_url: z.ZodOptional<z.ZodString>;
         healthcheck_url: z.ZodOptional<z.ZodString>;
         timeout_seconds: z.ZodDefault<z.ZodNumber>;

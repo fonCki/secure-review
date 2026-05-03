@@ -81,6 +81,18 @@ export type SeverityBreakdown = z.infer<typeof SeverityBreakdownSchema>;
 export declare const EvidenceJsonSchema: z.ZodObject<{
     task_id: z.ZodString;
     tool: z.ZodString;
+    /**
+     * Version of the secure-review package that produced this evidence.
+     * Read from package.json at runtime. Used for reproducibility — old vs new
+     * runs are distinguishable even when other fields are identical.
+     */
+    tool_version: z.ZodOptional<z.ZodString>;
+    /**
+     * Identifier for the finding-fingerprint / dedup algorithm in use when this
+     * evidence was produced. Different algorithm = different `total_findings_*`
+     * counts for the same input. See `findings/identity.ts` for the constant.
+     */
+    fingerprint_algorithm: z.ZodOptional<z.ZodString>;
     condition: z.ZodString;
     run: z.ZodNumber;
     timestamp: z.ZodString;
@@ -293,6 +305,8 @@ export declare const EvidenceJsonSchema: z.ZodObject<{
         owaspCategory?: string | undefined;
         remediation?: string | undefined;
     }[] | undefined;
+    tool_version?: string | undefined;
+    fingerprint_algorithm?: string | undefined;
     source_condition?: string | undefined;
     review_report?: string | undefined;
     rereview_report?: string | undefined;
@@ -358,6 +372,8 @@ export declare const EvidenceJsonSchema: z.ZodObject<{
         reportedBy?: string[] | undefined;
         confidence?: number | undefined;
     }[] | undefined;
+    tool_version?: string | undefined;
+    fingerprint_algorithm?: string | undefined;
     source_condition?: string | undefined;
     semgrep_after_fix?: number | undefined;
     eslint_after_fix?: number | undefined;

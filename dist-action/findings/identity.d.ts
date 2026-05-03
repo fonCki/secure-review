@@ -1,5 +1,11 @@
 import type { Finding } from './schema.js';
 /**
+ * Identifier for the current fingerprint algorithm. Recorded in evidence JSON
+ * so old runs (different algorithm) and new runs are distinguishable post-hoc.
+ * Bump this string whenever the algorithm in `findingFingerprint()` changes.
+ */
+export declare const FINGERPRINT_ALGORITHM = "v1-file-bucket";
+/**
  * Stable identity key for a finding.
  *
  * Used by:

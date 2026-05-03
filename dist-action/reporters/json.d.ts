@@ -6,6 +6,14 @@ export interface JsonReportOptions {
     run: number;
     sourceCondition?: string;
     modelVersion: string;
+    /**
+     * Version string of the secure-review package itself (read from
+     * package.json by the caller). Recorded in the evidence JSON so old vs
+     * new runs are distinguishable even when other fields look identical.
+     * Optional to keep the SDK API non-breaking for external callers; when
+     * omitted the `tool_version` field is simply not emitted.
+     */
+    toolVersion?: string;
     sessionId?: string;
     reviewerNames: string[];
 }
