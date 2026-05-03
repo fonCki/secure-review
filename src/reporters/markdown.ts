@@ -1,6 +1,8 @@
 import type { Finding, SeverityBreakdown } from '../findings/schema.js';
+import { SEVERITY_ORDER } from '../findings/schema.js';
 import type { ReviewModeOutput } from '../modes/review.js';
 import type { FixModeOutput } from '../modes/fix.js';
+import { agreementCount } from '../findings/aggregate.js';
 
 export function renderReviewReport(output: ReviewModeOutput): string {
   const parts: string[] = [];
@@ -13,7 +15,8 @@ export function renderReviewReport(output: ReviewModeOutput): string {
   parts.push(`## Summary\n`);
   parts.push(breakdownTable(output.breakdown));
   parts.push('');
-  parts.push(`Total findings: **${output.findings.length}**\n`);
+  const suppressedCount = output.baselineSuppressed?.length ?? 0;
+  parts.push(`Total findings: **${output.findings.length}**${suppressedCount > 0 ? ` (+${suppressedCount} suppressed by baseline)` : ''}\n`);
 
   parts.push(`## Per-reviewer\n`);
   parts.push('| Reviewer | Findings | Cost (USD) | Duration | Status |');
@@ -37,7 +40,8 @@ export function renderReviewReport(output: ReviewModeOutput): string {
   if (output.findings.length === 0) {
     parts.push('_No findings._');
   } else {
-    for (const f of output.findings) parts.push(renderFinding(f));
+    const sorted = sortByAgreement(output.findings);
+    for (const f of sorted) parts.push(renderFinding(f));
   }
 
   return parts.join('\n');
@@ -65,6 +69,13 @@ export function renderFixReport(output: FixModeOutput): string {
   const finalTotal = output.finalFindings.length;
   parts.push(`| **Total** | **${initialTotal}** | **${finalTotal}** | **${finalTotal - initialTotal}** |`);
   parts.push('');
+  const fixSuppressedCount = output.baselineSuppressed?.length ?? 0;
+  if (fixSuppressedCount > 0) {
+    parts.push(
+      `> Baseline: ${fixSuppressedCount} accepted finding(s) suppressed at all phases (writer never saw them).`,
+    );
+    parts.push('');
+  }
 
   parts.push(`## Iterations\n`);
   if (output.iterations.length === 0) {
@@ -73,15 +84,35 @@ export function renderFixReport(output: FixModeOutput): string {
     parts.push('| # | Verifier | Findings In | Findings Out | Resolved | Introduced (CRITICAL) | Cost (USD) |');
     parts.push('|---:|---|---:|---:|---:|---:|---:|');
     for (const it of output.iterations) {
-      const introduced = it.findingsAfter.length - (it.findingsBefore.length - it.resolved);
+      const introduced = it.introducedFindings?.length ?? Math.max(0, it.findingsAfter.length - (it.findingsBefore.length - it.resolved));
       parts.push(
-        `| ${it.iteration} | ${it.reviewer} | ${it.findingsBefore.length} | ${it.findingsAfter.length} | ${it.resolved} | ${Math.max(0, introduced)} (${it.newCritical}) | ${it.costUSD.toFixed(3)} |`,
+        `| ${it.iteration} | ${it.reviewer} | ${it.findingsBefore.length} | ${it.findingsAfter.length} | ${it.resolved} | ${introduced} (${it.newCritical}) | ${it.costUSD.toFixed(3)} |`,
       );
     }
     parts.push('');
     parts.push(
       '> _Findings In_ = what the writer addressed this iteration (union of initial readers for iter 1, previous verifier\'s audit for iter 2+). _Findings Out_ = what the rotating verifier saw after the writer ran.',
     );
+    parts.push('');
+
+    // Per-iteration finding detail (uses stable IDs so the same bug shows up
+    // with the same `S-NNN` across iterations — see findings/identity.ts).
+    for (const it of output.iterations) {
+      const resolved = it.resolvedFindings ?? [];
+      const introduced = it.introducedFindings ?? [];
+      if (resolved.length === 0 && introduced.length === 0) continue;
+      parts.push(`### Iteration ${it.iteration} detail\n`);
+      if (resolved.length > 0) {
+        parts.push(`**Resolved (${resolved.length}):**\n`);
+        for (const f of resolved) parts.push(`- ${renderFindingDelta(f, 'resolved')}`);
+        parts.push('');
+      }
+      if (introduced.length > 0) {
+        parts.push(`**Introduced (${introduced.length}):**\n`);
+        for (const f of introduced) parts.push(`- ${renderFindingDelta(f, 'introduced')}`);
+        parts.push('');
+      }
+    }
   }
   parts.push('');
 
@@ -95,7 +126,8 @@ export function renderFixReport(output: FixModeOutput): string {
   if (output.finalFindings.length === 0) {
     parts.push('_All findings resolved._ 🎉');
   } else {
-    for (const f of output.finalFindings) parts.push(renderFinding(f));
+    const sorted = sortByAgreement(output.finalFindings);
+    for (const f of sorted) parts.push(renderFinding(f));
   }
 
   return parts.join('\n');
@@ -122,17 +154,37 @@ function reviewStatusLine(output: {
 function renderFinding(f: Finding): string {
   const reporters = f.reportedBy.join(', ');
   const tags = [f.cwe, f.owaspCategory].filter(Boolean).join(' · ');
+  const count = agreementCount(f);
+  const agreementBadge = count > 1 ? ` · ✅ confirmed by ${count} models` : '';
+  const stableTag = f.stableId ? ` [${f.stableId}]` : '';
   return `
-### ${f.id} · **${f.severity}** · ${f.title}
+### ${f.id}${stableTag} · **${f.severity}** · ${f.title}${agreementBadge}
 
 - **File:** \`${f.file}:${f.lineStart}-${f.lineEnd}\`
 - **Tags:** ${tags || '—'}
-- **Reported by:** ${reporters}  (confidence: ${(f.confidence * 100).toFixed(0)}%)
+- **Reported by:** ${reporters}  (confidence: ${(f.confidence * 100).toFixed(0)}%, agreement: ${count} model${count !== 1 ? 's' : ''})
 
 ${f.description}
 
 ${f.remediation ? `**Remediation:** ${f.remediation}` : ''}
 `;
+}
+
+/** Compact one-line view for the per-iteration resolved/introduced detail block. */
+function renderFindingDelta(f: Finding, kind: 'resolved' | 'introduced'): string {
+  const id = f.stableId ? `\`${f.stableId}\` ` : '';
+  const sev = kind === 'resolved' ? `~~${f.severity}~~` : `**${f.severity}**`;
+  const tag = f.cwe ? ` (${f.cwe})` : '';
+  return `${id}${sev} \`${f.file}:${f.lineStart}\` — ${f.title}${tag}`;
+}
+
+/** Sort findings by agreement count (desc), then severity (desc). */
+function sortByAgreement(findings: Finding[]): Finding[] {
+  return [...findings].sort((a, b) => {
+    const cntDiff = agreementCount(b) - agreementCount(a);
+    if (cntDiff !== 0) return cntDiff;
+    return SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity];
+  });
 }
 
 function breakdownTable(b: SeverityBreakdown): string {

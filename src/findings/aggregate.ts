@@ -1,3 +1,4 @@
+import { findingFingerprint } from './identity.js';
 import { SEVERITY_ORDER, type Finding, type SeverityBreakdown } from './schema.js';
 
 /**
@@ -6,7 +7,10 @@ import { SEVERITY_ORDER, type Finding, type SeverityBreakdown } from './schema.j
  * Two findings are treated as the same issue if they share:
  *   - the same file
  *   - an overlapping line window (we bucket by lineStart//10)
- *   - the same CWE (or both missing a CWE but same title prefix)
+ *
+ * NOTE: We intentionally do NOT include CWE in the deduplication key because
+ * different models/tools often assign different CWEs to the same underlying bug,
+ * which would prevent cross-model merges and depress agreement.
  *
  * On merge:
  *   - keep the highest severity
@@ -40,9 +44,7 @@ export function aggregate(findings: Finding[]): Finding[] {
 }
 
 function bucketKey(f: Finding): string {
-  const bucket = Math.floor(f.lineStart / 10);
-  const cwe = f.cwe ?? f.title.slice(0, 24).toLowerCase();
-  return `${f.file}::${bucket}::${cwe}`;
+  return findingFingerprint(f);
 }
 
 function mergeFindings(a: Finding, b: Finding): Finding {
@@ -70,4 +72,9 @@ export function severityBreakdown(findings: Finding[]): SeverityBreakdown {
 
 export function countBySeverity(findings: Finding[], severity: Finding['severity']): number {
   return findings.filter((f) => f.severity === severity).length;
+}
+
+/** Number of distinct models that reported this finding. */
+export function agreementCount(finding: Finding): number {
+  return finding.reportedBy.length;
 }

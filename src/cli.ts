@@ -5,10 +5,12 @@ import { execFile } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { createInterface } from 'node:readline/promises';
 
 // Auto-load .env from CWD if present. Saves users from
 // 'set -a; source .env; set +a' before every invocation.
 // process.loadEnvFile is a built-in Node 20.12+ API — no extra dependency.
+// Security: .env files should be restricted to mode 600 and listed in .gitignore.
 if (existsSync('.env')) {
   try {
     process.loadEnvFile('.env');
@@ -17,14 +19,32 @@ if (existsSync('.env')) {
   }
 }
 import { Command, InvalidArgumentError } from 'commander';
+import { z } from 'zod';
 import { loadConfig, loadEnv } from './config/load.js';
 import { runReviewMode } from './modes/review.js';
 import { runFixMode } from './modes/fix.js';
+import { runBenchmarkMode, renderBenchmarkReport } from './modes/benchmark.js';
+import { runCompareMode, renderCompareReport } from './modes/compare.js';
+import { runReviewerBenchmark, renderReviewerBenchmarkReport } from './modes/reviewer-benchmark.js';
 import { renderReviewReport, renderFixReport } from './reporters/markdown.js';
+import { renderReviewHtml, renderFixHtml } from './reporters/html.js';
 import { renderReviewEvidence, renderFixEvidence } from './reporters/json.js';
 import { evaluatePrGates, postPrReview } from './reporters/github-pr.js';
-import { writeFileSafe } from './util/files.js';
+import { writeFileSafe, getGitChangedFiles, readSourceTree } from './util/files.js';
+import {
+  DEFAULT_BASELINE_FILENAME,
+  baselineFromFindings,
+  loadBaseline,
+  mergeBaseline,
+  saveBaseline,
+} from './findings/baseline.js';
+import { FindingSchema, type Finding } from './findings/schema.js';
 import { log, setQuiet, setVerbose } from './util/logger.js';
+import {
+  estimateRunCost,
+  formatEstimateText,
+  type EstimateMode,
+} from './util/estimate-cost.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -67,9 +87,107 @@ export function parseMaxCostUsd(raw: string): number {
   return n;
 }
 
+export function parseMaxWallTimeMinutes(raw: string): number {
+  if (raw.trim() === '') throw new InvalidArgumentError('wall-time cap must be a finite number greater than 0 minutes');
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new InvalidArgumentError('wall-time cap must be a finite number greater than 0 minutes');
+  }
+  return n;
+}
+
+/** Read a GitHub Actions workflow input from `INPUT_<NAME>`. */
+function ghActionInput(name: string): string | undefined {
+  const normalized = name.replace(/-/g, '_').toUpperCase();
+  const raw = process.env[`INPUT_${normalized}`];
+  if (raw === undefined || raw === '') return undefined;
+  return raw.trim();
+}
+
 function applyMaxCostOverride(config: Awaited<ReturnType<typeof loadConfig>>['config'], value?: number): void {
   if (value === undefined) return;
   config.gates.max_cost_usd = value;
+}
+
+function applyMaxWallTimeOverride(config: Awaited<ReturnType<typeof loadConfig>>['config'], value?: number): void {
+  if (value === undefined) return;
+  config.gates.max_wall_time_minutes = value;
+}
+
+/**
+ * Resolve a baseline file path and load it, honoring the `--baseline` CLI flag:
+ *   --baseline <path>  → explicit path; error if file missing
+ *   --baseline none    → skip baseline entirely (sentinel value, in case the
+ *                        scan root has a stale .secure-review-baseline.json)
+ *   omitted            → auto-detect `.secure-review-baseline.json` in the
+ *                        scan root (silent no-op if absent)
+ */
+async function resolveBaseline(
+  scanRoot: string,
+  explicitPath: string | undefined,
+): Promise<{ baseline: Awaited<ReturnType<typeof loadBaseline>>; path?: string }> {
+  if (explicitPath === 'none') return { baseline: undefined };
+  if (explicitPath) {
+    const abs = resolve(explicitPath);
+    const baseline = await loadBaseline(abs);
+    if (!baseline) throw new Error(`Baseline file not found: ${abs}`);
+    log.info(`Baseline: loaded ${baseline.entries.length} accepted finding(s) from ${abs}`);
+    return { baseline, path: abs };
+  }
+  const auto = resolve(scanRoot, DEFAULT_BASELINE_FILENAME);
+  const baseline = await loadBaseline(auto);
+  if (baseline) {
+    log.info(`Baseline: loaded ${baseline.entries.length} accepted finding(s) from ${auto}`);
+    return { baseline, path: auto };
+  }
+  return { baseline: undefined };
+}
+
+/**
+ * Print a pre-run cost estimate and (in interactive shells) ask the user to
+ * confirm before spending the budget. Returns `true` if the run should proceed.
+ *
+ * Policy:
+ *   - `--no-estimate` / `--skip-cost-estimate` → silently proceed.
+ *   - `--yes`                                  → print estimate, skip prompt.
+ *   - interactive (TTY)                        → print estimate, ask.
+ *   - non-interactive (CI, piped stdin/out)    → print estimate, proceed.
+ *     (`gates.max_cost_usd` is the budget contract for unattended runs;
+ *      blocking on a missing TTY would break every CI invocation and the
+ *      experiment's reproducibility scripts.)
+ */
+async function previewAndConfirmCost(
+  scanRoot: string,
+  config: Awaited<ReturnType<typeof loadConfig>>['config'],
+  mode: EstimateMode,
+  flags: { yes: boolean; skipEstimate: boolean; quiet: boolean },
+): Promise<boolean> {
+  if (flags.skipEstimate) return true;
+  const files = await readSourceTree(scanRoot, 200_000);
+  if (files.length === 0) {
+    log.warn('No source files found under scan root — skipping cost estimate.');
+    return true;
+  }
+  const estimate = estimateRunCost({ config, files, mode });
+  if (!flags.quiet) {
+    log.info(formatEstimateText(estimate, mode, config.gates.max_cost_usd));
+  }
+  if (flags.yes) return true;
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    if (!flags.quiet) {
+      log.info(
+        `Non-interactive shell — proceeding without prompt. Cap: $${config.gates.max_cost_usd.toFixed(2)} (set --yes to silence this notice).`,
+      );
+    }
+    return true;
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question('Proceed? [y/N] ')).trim().toLowerCase();
+    return answer === 'y' || answer === 'yes';
+  } finally {
+    rl.close();
+  }
 }
 
 function enforceReviewHealth(output: {
@@ -111,7 +229,9 @@ async function readPackageVersion(): Promise<string> {
   ];
   for (const candidate of candidates) {
     try {
-      const meta = JSON.parse(await readFile(candidate, 'utf8')) as { name?: string; version?: string };
+      const raw = JSON.parse(await readFile(candidate, 'utf8')) as unknown;
+      const PackageSchema = z.object({ name: z.string().optional(), version: z.string().optional() });
+      const meta = PackageSchema.parse(raw);
       if (meta.name === 'secure-review' && meta.version) return meta.version;
     } catch {
       // try next
@@ -119,6 +239,25 @@ async function readPackageVersion(): Promise<string> {
   }
   return '0.0.0';
 }
+
+const GithubPrEventSchema = z.object({
+  pull_request: z
+    .object({
+      number: z.number(),
+      head: z.object({
+        sha: z.string(),
+        repo: z.object({ fork: z.boolean().optional() }).optional(),
+      }),
+      base: z.object({ sha: z.string(), ref: z.string() }),
+    })
+    .optional(),
+  repository: z
+    .object({
+      owner: z.object({ login: z.string().optional() }).optional(),
+      name: z.string().optional(),
+    })
+    .optional(),
+});
 
 async function main(): Promise<void> {
   const version = await readPackageVersion();
@@ -151,18 +290,77 @@ async function main(): Promise<void> {
     });
 
   program
+    .command('baseline')
+    .description('Create or update a baseline file from a previous review/fix findings JSON.')
+    .argument('<findings-json>', 'path to a review-*.json or fix-*.json findings file')
+    .option('-o, --out <file>', `output baseline file (default: ${DEFAULT_BASELINE_FILENAME} in CWD)`, DEFAULT_BASELINE_FILENAME)
+    .option('--reason <text>', 'rationale to record on each new entry (e.g. "test fixture")')
+    .option('--merge', 'merge into an existing baseline file instead of overwriting it (preserves prior reasons)', false)
+    .action(async (findingsJsonPath: string, opts: { out: string; reason?: string; merge: boolean }) => {
+      try {
+        const findingsAbs = resolve(findingsJsonPath);
+        const outAbs = resolve(opts.out);
+        const raw = JSON.parse(await readFile(findingsAbs, 'utf8')) as { findings?: unknown };
+        const findingsRaw = Array.isArray(raw.findings) ? raw.findings : Array.isArray(raw) ? raw : null;
+        if (!findingsRaw) {
+          throw new Error(
+            `Could not find a 'findings' array in ${findingsAbs}. Pass a review/fix findings JSON or a raw Finding[].`,
+          );
+        }
+        const findings: Finding[] = findingsRaw.map((f, i) => {
+          const parsed = FindingSchema.safeParse(f);
+          if (!parsed.success) {
+            throw new Error(`Entry #${i + 1} is not a valid Finding: ${parsed.error.message}`);
+          }
+          return parsed.data;
+        });
+        const existing = opts.merge ? await loadBaseline(outAbs) : undefined;
+        const next = existing
+          ? mergeBaseline(existing, findings, opts.reason)
+          : baselineFromFindings(findings, opts.reason);
+        await saveBaseline(outAbs, next);
+        const added = next.entries.length - (existing?.entries.length ?? 0);
+        log.success(`Baseline written: ${outAbs}`);
+        log.info(
+          `${next.entries.length} accepted finding(s) total${existing ? ` (+${added} new)` : ''}` +
+            (opts.reason ? ` · reason: "${opts.reason}"` : ''),
+        );
+      } catch (err) {
+        log.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
+  program
     .command('review')
     .description('Run multi-model review on a path. Posts no changes.')
     .argument('<path>', 'path to review')
     .option('-c, --config <file>', 'config file', '.secure-review.yml')
     .option('-o, --output-dir <dir>', 'output directory', './reports')
+    .option('--since <ref>', 'only review files changed since this git ref (branch, commit, or tag)')
+    .option('--baseline <file|none>', `baseline file of accepted findings; pass 'none' to disable (default: auto-detect ${DEFAULT_BASELINE_FILENAME} in scan root)`)
     .option('--task-id <id>', 'task identifier for evidence JSON', 'unknown')
     .option('--run <n>', 'run number', '1')
-    .action(async (path: string, opts: { config: string; outputDir: string; taskId: string; run: string }) => {
+    .option('-y, --yes', 'skip the pre-run cost-estimate confirmation prompt', false)
+    .option('--no-estimate', 'skip the pre-run cost estimate entirely (no print, no prompt)')
+    .action(async (path: string, opts: { config: string; outputDir: string; since?: string; baseline?: string; taskId: string; run: string; yes: boolean; estimate: boolean }) => {
       try {
         const { config, configDir } = await loadConfig(opts.config);
         const env = loadEnv();
-        const output = await runReviewMode({ root: resolve(path), config, configDir, env });
+        const root = resolve(path);
+        const proceed = await previewAndConfirmCost(root, config, 'review', {
+          yes: opts.yes,
+          skipEstimate: opts.estimate === false,
+          quiet: program.opts<{ quiet?: boolean }>().quiet === true,
+        });
+        if (!proceed) {
+          log.warn('Aborted by user before running review.');
+          process.exit(0);
+        }
+        const only = opts.since ? await getGitChangedFiles(root, opts.since) : undefined;
+        if (only) log.info(`Incremental mode: ${only.size} file${only.size === 1 ? '' : 's'} changed since ${opts.since}`);
+        const { baseline } = await resolveBaseline(root, opts.baseline);
+        const output = await runReviewMode({ root, config, configDir, env, only, baseline });
         enforceReviewHealth(output);
 
         const stamp = timestamp();
@@ -173,6 +371,7 @@ async function main(): Promise<void> {
           `review-${stamp}.md`,
           stamp,
         );
+        const htmlPath = mdPath.replace(/\.md$/, '.html');
         const jsonPath = outputPath(
           config.output.findings,
           DEFAULT_OUTPUT.findings,
@@ -181,6 +380,7 @@ async function main(): Promise<void> {
           stamp,
         );
         await writeFileSafe(mdPath, renderReviewReport(output));
+        await writeFileSafe(htmlPath, renderReviewHtml(output));
         const evidence = renderReviewEvidence(output, {
           taskId: opts.taskId,
           run: Number(opts.run),
@@ -190,8 +390,12 @@ async function main(): Promise<void> {
         await writeFileSafe(jsonPath, JSON.stringify(evidence, null, 2));
 
         log.success(`Report:    ${mdPath}`);
+        log.success(`HTML:      ${htmlPath}`);
         log.success(`Findings:  ${jsonPath}`);
-        log.info(`Total: ${output.findings.length} findings · $${output.totalCostUSD.toFixed(3)}`);
+        const baselineNote = output.baselineSuppressed.length > 0
+          ? ` · ${output.baselineSuppressed.length} baselined`
+          : '';
+        log.info(`Total: ${output.findings.length} findings${baselineNote} · $${output.totalCostUSD.toFixed(3)}`);
       } catch (err) {
         log.error(err instanceof Error ? err.message : String(err));
         process.exit(1);
@@ -204,21 +408,52 @@ async function main(): Promise<void> {
     .argument('<path>', 'path to review and fix')
     .option('-c, --config <file>', 'config file', '.secure-review.yml')
     .option('-o, --output-dir <dir>', 'output directory', './reports')
+    .option('--since <ref>', 'only review/fix files changed since this git ref (branch, commit, or tag)')
+    .option('--baseline <file|none>', `baseline file of accepted findings; pass 'none' to disable (default: auto-detect ${DEFAULT_BASELINE_FILENAME} in scan root)`)
     .option('--max-iterations <n>', 'override max iterations', parseMaxIterations)
     .option('--max-cost-usd <n>', 'override cost cap', parseMaxCostUsd)
+    .option('--max-wall-time-minutes <n>', 'override wall-time cap for the fix loop', parseMaxWallTimeMinutes)
     .option('--task-id <id>', 'task identifier for evidence JSON', 'unknown')
     .option('--run <n>', 'run number', '1')
+    .option('-y, --yes', 'skip the pre-run cost-estimate confirmation prompt', false)
+    .option('--no-estimate', 'skip the pre-run cost estimate entirely (no print, no prompt)')
     .action(
       async (
         path: string,
-        opts: { config: string; outputDir: string; maxIterations?: number; maxCostUsd?: number; taskId: string; run: string },
+        opts: {
+          config: string;
+          outputDir: string;
+          since?: string;
+          baseline?: string;
+          maxIterations?: number;
+          maxCostUsd?: number;
+          maxWallTimeMinutes?: number;
+          taskId: string;
+          run: string;
+          yes: boolean;
+          estimate: boolean;
+        },
       ) => {
         try {
           const { config, configDir } = await loadConfig(opts.config);
           const env = loadEnv();
           if (opts.maxIterations !== undefined) config.fix.max_iterations = opts.maxIterations;
           applyMaxCostOverride(config, opts.maxCostUsd);
-          const output = await runFixMode({ root: resolve(path), config, configDir, env });
+          applyMaxWallTimeOverride(config, opts.maxWallTimeMinutes);
+          const root = resolve(path);
+          const proceed = await previewAndConfirmCost(root, config, 'fix', {
+            yes: opts.yes,
+            skipEstimate: opts.estimate === false,
+            quiet: program.opts<{ quiet?: boolean }>().quiet === true,
+          });
+          if (!proceed) {
+            log.warn('Aborted by user before running fix.');
+            process.exit(0);
+          }
+          const only = opts.since ? await getGitChangedFiles(root, opts.since) : undefined;
+          if (only) log.info(`Incremental mode: ${only.size} file${only.size === 1 ? '' : 's'} changed since ${opts.since}`);
+          const { baseline } = await resolveBaseline(root, opts.baseline);
+          const output = await runFixMode({ root, config, configDir, env, only, baseline });
           enforceReviewHealth(output);
 
           const stamp = timestamp();
@@ -229,6 +464,7 @@ async function main(): Promise<void> {
             `fix-${stamp}.md`,
             stamp,
           );
+          const htmlPath = mdPath.replace(/\.md$/, '.html');
           const jsonPath = outputPath(
             config.output.findings,
             DEFAULT_OUTPUT.findings,
@@ -244,6 +480,7 @@ async function main(): Promise<void> {
             stamp,
           );
           await writeFileSafe(mdPath, renderFixReport(output));
+          await writeFileSafe(htmlPath, renderFixHtml(output));
           const evidence = renderFixEvidence(output, {
             taskId: opts.taskId,
             run: Number(opts.run),
@@ -251,13 +488,17 @@ async function main(): Promise<void> {
             reviewerNames: config.reviewers.map((r) => r.name),
           });
           await writeFileSafe(jsonPath, JSON.stringify(evidence, null, 2));
-          await writeFileSafe(diffPath, await readGitDiff(resolve(path)));
+          await writeFileSafe(diffPath, await readGitDiff(root));
 
           log.success(`Report:    ${mdPath}`);
+          log.success(`HTML:      ${htmlPath}`);
           log.success(`Findings:  ${jsonPath}`);
           log.success(`Diff:      ${diffPath}`);
+          const baselineNote = output.baselineSuppressed.length > 0
+            ? `  Baselined: ${output.baselineSuppressed.length}`
+            : '';
           log.info(
-            `Initial: ${output.initialFindings.length}  Final: ${output.finalFindings.length}  Resolved: ${evidence.findings_resolved} (${evidence.resolution_rate_pct}%)  Introduced: ${evidence.new_findings_introduced}  Cost: $${output.totalCostUSD.toFixed(3)}`,
+            `Initial: ${output.initialFindings.length}  Final: ${output.finalFindings.length}  Resolved: ${evidence.findings_resolved} (${evidence.resolution_rate_pct}%)  Introduced: ${evidence.new_findings_introduced}${baselineNote}  Cost: $${output.totalCostUSD.toFixed(3)}`,
           );
           if (output.gateBlocked) process.exit(2);
         } catch (err) {
@@ -269,34 +510,42 @@ async function main(): Promise<void> {
 
   program
     .command('pr')
-    .description('GitHub Action entrypoint — review PR and post line-anchored comments.')
+    .description('GitHub Action entrypoint — multi-model static security review and PR inline comments.')
     .option('-c, --config <file>', 'config file', '.secure-review.yml')
-    .option('--autofix', 'deprecated no-op; PR entrypoint always runs review mode', false)
-    .option('--max-cost-usd <n>', 'override cost cap', parseMaxCostUsd)
+    .option('--autofix', 'deprecated no-op; static review always runs', false)
+    .option('--max-cost-usd <n>', 'override cost cap (static review)', parseMaxCostUsd)
     .action(async (opts: { config: string; autofix: boolean; maxCostUsd?: number }) => {
       try {
         const { config, configDir } = await loadConfig(opts.config);
         const env = loadEnv();
         applyMaxCostOverride(config, opts.maxCostUsd);
+
         if (opts.autofix) {
-          log.warn('PR autofix mode is deprecated and currently a no-op; running review mode.');
+          log.warn('PR autofix mode is deprecated and a no-op; running static review.');
+        }
+        const legacyMode = ghActionInput('mode')?.trim().toLowerCase();
+        if (legacyMode === 'attack' || legacyMode === 'attack-ai') {
+          log.warn(
+            'Runtime attack modes moved to the secure-review-runtime package; running static review only.',
+          );
+        } else if (legacyMode === 'fix') {
+          log.warn('INPUT mode=fix is deprecated; using static multi-model review.');
         }
 
         const eventPath = process.env.GITHUB_EVENT_PATH;
-        if (!eventPath) throw new Error('GITHUB_EVENT_PATH not set — `pr` subcommand requires GitHub Actions context');
-        const event = JSON.parse(await readFile(eventPath, 'utf8')) as {
-          pull_request?: {
-            number: number;
-            head: { sha: string; repo?: { fork?: boolean } };
-            base: { sha: string; ref: string };
-          };
-          repository?: { owner?: { login?: string }; name?: string };
-        };
+        if (!eventPath)
+          throw new Error('GITHUB_EVENT_PATH not set — `pr` subcommand requires GitHub Actions context');
+        const rawEvent = JSON.parse(await readFile(eventPath, 'utf8')) as unknown;
+        const eventParseResult = GithubPrEventSchema.safeParse(rawEvent);
+        if (!eventParseResult.success) {
+          throw new Error(`Invalid GitHub event payload: ${eventParseResult.error.message}`);
+        }
+        const event = eventParseResult.data;
         if (!event.pull_request) throw new Error('Event is not a pull_request event');
         const pr = event.pull_request;
 
         if (pr.head.repo?.fork) {
-          log.warn('PR is from a fork; secrets not exposed. Skipping review.');
+          log.warn('PR is from a fork; secrets not exposed. Skipping.');
           return;
         }
 
@@ -353,6 +602,35 @@ async function main(): Promise<void> {
       }
     });
 
+
+  program
+    .command('estimate')
+    .description('Print a pre-run cost estimate without invoking any model.')
+    .argument('<path>', 'path that would be reviewed/fixed')
+    .option('-c, --config <file>', 'config file', '.secure-review.yml')
+    .option('-m, --mode <mode>', 'estimate for `review` or `fix` mode', 'fix')
+    .option('--max-iterations <n>', 'override max iterations (fix mode)', parseMaxIterations)
+    .action(async (path: string, opts: { config: string; mode: string; maxIterations?: number }) => {
+      try {
+        const mode = opts.mode === 'review' ? 'review' : 'fix';
+        if (opts.mode !== 'review' && opts.mode !== 'fix') {
+          log.warn(`Unknown mode '${opts.mode}', defaulting to 'fix'`);
+        }
+        const { config } = await loadConfig(opts.config);
+        if (opts.maxIterations !== undefined) config.fix.max_iterations = opts.maxIterations;
+        const files = await readSourceTree(resolve(path), 200_000);
+        if (files.length === 0) {
+          log.warn('No source files found under scan root.');
+          return;
+        }
+        const estimate = estimateRunCost({ config, files, mode });
+        log.info(formatEstimateText(estimate, mode, config.gates.max_cost_usd));
+      } catch (err) {
+        log.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
   program
     .command('scan')
     .description('Run SAST only (semgrep + eslint + npm audit). No AI calls.')
@@ -394,12 +672,117 @@ async function main(): Promise<void> {
       }
     });
 
+  program
+    .command('benchmark')
+    .description('Benchmark writer models: run initial scan then test each writer one iteration.')
+    .argument('<path>', 'path to scan and fix')
+    .option('-c, --config <file>', 'config file', '.secure-review.yml')
+    .option('-o, --output-dir <dir>', 'output directory', './reports')
+    .action(async (path: string, opts: { config: string; outputDir: string }) => {
+      try {
+        const { config, configDir } = await loadConfig(opts.config);
+        const env = loadEnv();
+        const output = await runBenchmarkMode({ root: resolve(path), config, configDir, env });
+
+        const stamp = timestamp();
+        const mdPath = resolve(opts.outputDir, `benchmark-${stamp}.md`);
+        const report = renderBenchmarkReport(output);
+        await writeFileSafe(mdPath, report);
+
+        log.success(`Benchmark report: ${mdPath}`);
+        log.info(`\n${report}`);
+      } catch (err) {
+        log.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('compare')
+    .description('Compare security findings between two paths side-by-side.')
+    .argument('<path-a>', 'first path to review')
+    .argument('<path-b>', 'second path to review')
+    .option('-c, --config <file>', 'config file', '.secure-review.yml')
+    .option('-o, --output-dir <dir>', 'output directory', './reports')
+    .action(async (pathA: string, pathB: string, opts: { config: string; outputDir: string }) => {
+      try {
+        const { config, configDir } = await loadConfig(opts.config);
+        const env = loadEnv();
+        const output = await runCompareMode({
+          rootA: resolve(pathA),
+          rootB: resolve(pathB),
+          config,
+          configDir,
+          env,
+        });
+
+        const stamp = timestamp();
+        const mdPath = resolve(opts.outputDir, `compare-${stamp}.md`);
+        const report = renderCompareReport(output);
+        await writeFileSafe(mdPath, report);
+
+        log.success(`Compare report: ${mdPath}`);
+        log.info(`Delta: B is ${output.delta} vs A`);
+        log.info(
+          `  A: ${output.outputA.findings.length} findings, B: ${output.outputB.findings.length} findings`,
+        );
+        log.info(
+          `  Common: ${output.common.length}, Unique to A: ${output.uniqueToA.length}, Unique to B: ${output.uniqueToB.length}`,
+        );
+      } catch (err) {
+        log.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('reviewer-benchmark')
+    .description('Benchmark single-model vs combined multi-model reviewer — shows what each model misses')
+    .argument('<path>', 'directory to review')
+    .option('-c, --config <file>', 'config file', '.secure-review.yml')
+    .option('-o, --output-dir <dir>', 'output directory for reports', './reports')
+    .action(async (scanPath: string, opts: { config: string; outputDir: string }) => {
+      try {
+        const { config, configDir } = await loadConfig(opts.config);
+        const env = loadEnv();
+        const stamp = timestamp();
+        const output = await runReviewerBenchmark({
+          root: resolve(scanPath),
+          config,
+          configDir,
+          env,
+        });
+        const md = renderReviewerBenchmarkReport(output);
+        const mdPath = resolve(opts.outputDir, `reviewer-benchmark-${stamp}.md`);
+        await writeFileSafe(mdPath, md);
+        log.success(`Reviewer benchmark report: ${mdPath}`);
+      } catch (err) {
+        log.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
   // When running inside GitHub Actions with no explicit subcommand, default to `pr`.
   // The action.yml runs this entry with inputs mapped to env vars but no argv
   // subcommand — without this shim the CLI would print --help and exit.
   const argv = [...process.argv];
   const inRunner = process.env.GITHUB_ACTIONS === 'true';
-  const hasSubcommand = argv.slice(2).some((a) => ['review', 'fix', 'pr', 'scan', 'help'].includes(a));
+  const hasSubcommand = argv.slice(2).some((a) =>
+    [
+      'review',
+      'fix',
+      'pr',
+      'scan',
+      'help',
+      'benchmark',
+      'compare',
+      'reviewer-benchmark',
+      'baseline',
+      'estimate',
+      'init',
+      'setup-secrets',
+    ].includes(a),
+  );
   if (inRunner && !hasSubcommand) {
     const mode = (process.env.INPUT_MODE ?? 'review').toLowerCase();
     argv.push('pr');

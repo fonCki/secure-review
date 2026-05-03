@@ -3,6 +3,20 @@ import { estimateCost } from '../util/cost.js';
 import { withRetry } from '../util/retry.js';
 import type { CompleteInput, CompleteOutput, ModelAdapter } from './types.js';
 
+// Allowlist of trusted Google API base URL prefixes
+const ALLOWED_GOOGLE_BASE_URL_PATTERN = /^https:\/\/[a-zA-Z0-9.-]+\.googleapis\.com(:\/|$|\/)/;
+
+function getValidatedGoogleBaseUrl(): string | undefined {
+  const raw = process.env.GOOGLE_BASE_URL;
+  if (!raw) return undefined;
+  if (!ALLOWED_GOOGLE_BASE_URL_PATTERN.test(raw)) {
+    throw new Error(
+      `GOOGLE_BASE_URL "${raw}" is not a valid googleapis.com endpoint. Only https://*.googleapis.com URLs are allowed.`,
+    );
+  }
+  return raw;
+}
+
 export class GoogleAPIAdapter implements ModelAdapter {
   readonly provider = 'google' as const;
   readonly mode = 'api' as const;
@@ -17,8 +31,9 @@ export class GoogleAPIAdapter implements ModelAdapter {
 
   async complete(input: CompleteInput): Promise<CompleteOutput> {
     const started = Date.now();
-    const requestOptions = process.env.GOOGLE_BASE_URL
-      ? { baseUrl: process.env.GOOGLE_BASE_URL }
+    const validatedBaseUrl = getValidatedGoogleBaseUrl();
+    const requestOptions = validatedBaseUrl
+      ? { baseUrl: validatedBaseUrl }
       : undefined;
     const gen = this.client.getGenerativeModel(
       {

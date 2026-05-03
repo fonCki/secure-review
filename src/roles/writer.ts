@@ -36,7 +36,15 @@ export interface WriterRunOutput {
   error?: string;
 }
 
-const SYSTEM_PREAMBLE = `You are a senior software engineer applying security fixes to existing code. You MUST NOT introduce features; you fix only the issues listed. You return the COMPLETE updated content of each modified file. You preserve all existing functionality and style.`;
+const SYSTEM_PREAMBLE = `You are a senior software engineer applying targeted, surgical security fixes to existing code.
+
+CRITICAL CONSTRAINTS — follow these exactly:
+1. Only modify the specific lines, functions, or code blocks mentioned in each finding. Do NOT rewrite unrelated code.
+2. Do NOT add new features, refactor unrelated code, rename variables, add comments, or change formatting outside the affected area.
+3. Return a MINIMAL diff — only include files that genuinely needed changing to address the listed findings.
+4. For every file you change, explicitly state which finding ID(s) that change addresses.
+5. You preserve all existing functionality, style, and indentation exactly as-is outside the fixed lines.
+6. If a finding does not require a code change (e.g. it is informational), do not include that file.`;
 
 /**
  * Writer models occasionally emit control characters (notably NUL / U+0000)
@@ -79,6 +87,7 @@ Return ONLY a JSON object of the shape:
   "changes": [
     {
       "file": "relative/path/to/file.ts",
+      "addresses": ["F-01", "F-03"],
       "content": "<FULL UPDATED FILE CONTENT>"
     }
   ]
@@ -86,9 +95,11 @@ Return ONLY a JSON object of the shape:
 
 Rules:
 - Include the FULL content of each changed file. No diffs, no omissions.
-- Only include files you actually modified.
-- Do NOT invent new files unless the fix strictly requires one (e.g. a middleware).
-- Do NOT add unrelated refactors.
+- Only include files you ACTUALLY modified. If a file did not need changing, omit it entirely.
+- The "addresses" field MUST list which finding IDs this file change resolves (e.g. ["F-01"]).
+- Do NOT invent new files unless the fix strictly requires one (e.g. a new middleware module).
+- Do NOT add unrelated refactors, comments, formatting changes, or new features.
+- Make the minimal change necessary to fix each finding — only modify the specific lines/functions cited.
 - Do NOT wrap the JSON in prose or markdown fences.
 `;
 
@@ -115,7 +126,12 @@ export async function runWriter(input: WriterRunInput): Promise<WriterRunOutput>
     .join('\n\n');
 
   const system = `${SYSTEM_PREAMBLE}\n\n${skill}\n\n${OUTPUT_CONTRACT}`;
-  const user = `Fix the following security findings. Modify only what is necessary.
+  const user = `Apply surgical, targeted security fixes for the findings listed below.
+
+IMPORTANT: Only modify the exact lines/functions mentioned in each finding. Do not touch unrelated code.
+For each file you change, state which finding ID(s) it addresses in the "addresses" field.
+Return ONLY files that genuinely required changes — omit files that needed no modification.
+
 ${codeContext}
 
 FINDINGS TO FIX:

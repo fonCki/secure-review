@@ -9,6 +9,10 @@ reports/
 *.tsbuildinfo
 .vitest-cache/
 
+# Vitest fixtures (attack-ai crawl temp dirs under repo root)
+.tmp-attack-ai-*/
+.tmp-review-vs-attack-ai/
+
 # Keep dist-action committed — it's the bundled Action entry point.
 # (dist/ is the library build output, .gitignored; dist-action/ is committed)
 

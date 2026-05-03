@@ -1,13 +1,19 @@
 import type { Env, SecureReviewConfig } from '../config/schema.js';
+import { type Baseline } from '../findings/baseline.js';
 import type { Finding, SeverityBreakdown } from '../findings/schema.js';
 import { type ReviewerRunOutput } from '../roles/reviewer.js';
 import { type WriterRunOutput } from '../roles/writer.js';
+import type { FileContent } from '../util/files.js';
 import { type ReviewHealthStatus } from '../util/review-health.js';
 export interface FixModeInput {
     root: string;
     config: SecureReviewConfig;
     configDir: string;
     env: Env;
+    /** If set, only files whose relPath is in this set are reviewed (incremental mode). */
+    only?: Set<string>;
+    /** If set, findings whose fingerprint matches a baseline entry are suppressed. */
+    baseline?: Baseline;
 }
 /**
  * One iteration of the rotating fix loop.
@@ -38,6 +44,8 @@ export interface IterationRecord {
     writerRun?: WriterRunOutput;
     findingsBefore: Finding[];
     findingsAfter: Finding[];
+    resolvedFindings: Finding[];
+    introducedFindings: Finding[];
     newCritical: number;
     resolved: number;
     costUSD: number;
@@ -57,7 +65,28 @@ export interface FixModeOutput {
     totalCostUSD: number;
     totalDurationMs: number;
     verification?: ReviewerRunOutput[];
+    /** Findings suppressed by the baseline at any phase (initial + each iteration + final). */
+    baselineSuppressed: Finding[];
 }
+/** Capture a snapshot of file contents keyed by relPath. */
+export declare function snapshotFiles(files: FileContent[]): Map<string, string>;
+/** Options for {@link restoreSnapshot}. */
+export type RestoreSnapshotOptions = {
+    /**
+     * Paths the writer reported touching this iteration (normalized repo-relative paths).
+     * Any path listed here that is **not** in `snapshot` is treated as a file **created**
+     * by the writer and is deleted on restore.
+     *
+     * When omitted, no paths are deleted — only snapshot entries are written back.
+     * That avoids wiping files outside an incremental `--since` subset (the snapshot
+     * map might only cover a fraction of the repo).
+     */
+    writerTouchedRelPaths?: string[];
+};
+/** Restore snapshotted files to disk using writeFileSafe. */
+export declare function restoreSnapshot(root: string, snapshot: Map<string, string>, options?: RestoreSnapshotOptions): Promise<void>;
+/** Filter findings down to those that meet the configured thresholds. */
+export declare function filterFindingsForWriter(findings: Finding[], minConfidence: number, minSeverityToFix: Finding['severity']): Finding[];
 /**
  * Cross-model rotating fix loop (Condition F, redesigned in 0.5.0).
  *

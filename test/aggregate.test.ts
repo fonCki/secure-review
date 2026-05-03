@@ -39,10 +39,15 @@ describe('aggregate', () => {
     expect(aggregate([f1, f2])).toHaveLength(2);
   });
 
-  it('keeps findings separate when CWE differs', () => {
-    const f1 = mkFinding({ cwe: 'CWE-306' });
-    const f2 = mkFinding({ cwe: 'CWE-79' });
-    expect(aggregate([f1, f2])).toHaveLength(2);
+  it('merges findings at the same location even when CWE differs', () => {
+    // CWE is intentionally excluded from the bucket key: models assign
+    // different CWEs to the same bug (e.g. CWE-78 vs CWE-787 for the same
+    // command injection line), so we deduplicate on file+line-bucket only.
+    const f1 = mkFinding({ cwe: 'CWE-306', reportedBy: ['model-a'] });
+    const f2 = mkFinding({ cwe: 'CWE-79', reportedBy: ['model-b'] });
+    const out = aggregate([f1, f2]);
+    expect(out).toHaveLength(1);
+    expect(out[0].reportedBy.sort()).toEqual(['model-a', 'model-b']);
   });
 
   it('re-numbers IDs sequentially', () => {

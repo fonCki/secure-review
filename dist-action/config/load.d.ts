@@ -6,7 +6,10 @@ export interface LoadedConfig {
 }
 export declare function loadConfig(configPath: string): Promise<LoadedConfig>;
 export declare function loadEnv(source?: NodeJS.ProcessEnv): Env;
-/** Resolve a skill path relative to the config dir if not absolute. */
+/** Resolve a skill path relative to the config dir if not absolute.
+ *  Absolute paths are disallowed to prevent local file inclusion attacks.
+ *  Directory traversal beyond the config directory is also prevented.
+ */
 export declare function resolveSkillPath(skill: string, configDir: string): string;
 export declare function loadSkill(skillPath: string): Promise<string>;
 //# sourceMappingURL=load.d.ts.map

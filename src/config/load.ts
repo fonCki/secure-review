@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve, normalize } from 'node:path';
 import * as YAML from 'js-yaml';
 import { SecureReviewConfigSchema, type SecureReviewConfig, EnvSchema, type Env } from './schema.js';
 
@@ -40,9 +40,27 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   return result.data;
 }
 
-/** Resolve a skill path relative to the config dir if not absolute. */
+/** Resolve a skill path relative to the config dir if not absolute.
+ *  Absolute paths are disallowed to prevent local file inclusion attacks.
+ *  Directory traversal beyond the config directory is also prevented.
+ */
 export function resolveSkillPath(skill: string, configDir: string): string {
-  return isAbsolute(skill) ? skill : resolve(configDir, skill);
+  if (isAbsolute(skill)) {
+    throw new Error(
+      `Skill path must be relative to the config directory, not absolute: "${skill}". ` +
+      `Absolute skill paths are disallowed to prevent unintended file inclusion.`,
+    );
+  }
+  const resolved = normalize(resolve(configDir, skill));
+  const base = normalize(configDir) + '/';
+  // Allow paths inside configDir or its subdirectories only
+  if (!resolved.startsWith(base) && resolved !== normalize(configDir)) {
+    throw new Error(
+      `Skill path "${skill}" resolves outside the config directory. ` +
+      `Directory traversal beyond the config directory is not permitted.`,
+    );
+  }
+  return resolved;
 }
 
 export async function loadSkill(skillPath: string): Promise<string> {

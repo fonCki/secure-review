@@ -13,7 +13,14 @@ export const SEVERITY_ORDER: Record<Severity, number> = {
 
 /** A single vulnerability or concern reported by a reviewer. */
 export const FindingSchema = z.object({
-  id: z.string(), // e.g. "F-01"
+  id: z.string(), // e.g. "F-01" — assigned per-aggregate-call, NOT stable across iterations
+  /**
+   * Stable identity assigned by the session-wide `FindingRegistry` (e.g. "S-001").
+   * Same bug → same `stableId` across fix-loop iterations, even if the verifier
+   * reports it with a slightly different line or title. Optional: only populated
+   * by callers that have a registry (currently `runFixMode`).
+   */
+  stableId: z.string().optional(),
   severity: Severity,
   cwe: z.string().optional(), // e.g. "CWE-306"
   owaspCategory: z.string().optional(), // e.g. "A01:2025"
@@ -67,6 +74,13 @@ export const EvidenceJsonSchema = z.object({
   total_cost_usd: z.number().optional(),
   review_status: z.string(),
   failed_reviewers: z.array(z.string()),
+  /**
+   * Aggregated findings included for downstream tooling that needs the actual
+   * finding objects (e.g. `secure-review baseline reports/review-*.json`).
+   * Review mode writes the current review findings; fix mode writes final
+   * remaining findings after the loop.
+   */
+  findings: z.array(FindingSchema).optional(),
   // Extended fields for multi-reviewer runs
   reviewers: z.array(z.string()).optional(),
   iterations: z.number().int().optional(),

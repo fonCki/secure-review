@@ -42,6 +42,7 @@ export function renderReviewEvidence(out: ReviewModeOutput, opts: JsonReportOpti
     total_cost_usd: out.totalCostUSD,
     review_status: out.reviewStatus,
     failed_reviewers: out.failedReviewers,
+    findings: out.findings,
     reviewers: opts.reviewerNames,
     iterations: 0,
   };
@@ -78,6 +79,7 @@ export function renderFixEvidence(out: FixModeOutput, opts: JsonReportOptions): 
     total_cost_usd: out.totalCostUSD,
     review_status: out.reviewStatus,
     failed_reviewers: out.failedReviewers,
+    findings: out.finalFindings,
     reviewers: opts.reviewerNames,
     iterations: out.iterations.length,
     per_iteration: out.iterations.map((it) => ({

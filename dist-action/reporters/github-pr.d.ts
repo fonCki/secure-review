@@ -1,12 +1,14 @@
-import type { SecureReviewConfig } from '../config/schema.js';
-import type { SeverityBreakdown } from '../findings/schema.js';
+import type { DynamicConfig, SecureReviewConfig } from '../config/schema.js';
+import type { Finding, SeverityBreakdown } from '../findings/schema.js';
 import type { ReviewModeOutput } from '../modes/review.js';
-export interface PrPostOptions {
+export interface PrPostBaseOptions {
     owner: string;
     repo: string;
     prNumber: number;
     commitSha: string;
     token: string;
+}
+export interface PrPostOptions extends PrPostBaseOptions {
     /**
      * Map of changed-file path → Set of new-file line numbers that are valid
      * anchor points for a PR review comment (i.e. lines that appear in the
@@ -41,5 +43,10 @@ export interface PrGateDecision {
  * Findings in files the PR doesn't touch at all are dropped (noise).
  */
 export declare function postPrReview(output: ReviewModeOutput, opts: PrPostOptions): Promise<PrPostResult>;
+/** PR review with Markdown body only (no inline comments) — used for runtime / scanner summaries. */
+export declare function postPrMarkdownReview(opts: PrPostBaseOptions & {
+    bodyMarkdown: string;
+}): Promise<void>;
+export declare function evaluateRuntimePrGate(findings: Finding[], gates: DynamicConfig['gates']): PrGateDecision;
 export declare function evaluatePrGates(prResult: PrPostResult, totalCostUSD: number, gates: SecureReviewConfig['gates']): PrGateDecision;
 //# sourceMappingURL=github-pr.d.ts.map

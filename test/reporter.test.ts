@@ -98,10 +98,18 @@ describe('markdown renderers', () => {
 
 describe('json renderers', () => {
   it('emits Condition-D-compatible fields for a fix run', () => {
+    // Two findings with distinct fingerprints (different files); only one
+    // remains in the final set, so resolution should be 50%. With the
+    // unified `findingFingerprint`, identity is `file::lineBucket` — so
+    // these must differ in either file or in line by ≥10 to count as
+    // separate findings.
     const evidence = renderFixEvidence(
       {
-        initialFindings: [mkFinding(), mkFinding({ id: 'F-02', cwe: 'CWE-79' })],
-        finalFindings: [mkFinding({ id: 'F-02', cwe: 'CWE-79' })],
+        initialFindings: [
+          mkFinding({ id: 'F-01', file: 'src/a.ts' }),
+          mkFinding({ id: 'F-02', file: 'src/b.ts', cwe: 'CWE-79' }),
+        ],
+        finalFindings: [mkFinding({ id: 'F-02', file: 'src/b.ts', cwe: 'CWE-79' })],
         initialBreakdown: { CRITICAL: 0, HIGH: 2, MEDIUM: 0, LOW: 0, INFO: 0 },
         finalBreakdown: { CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0, INFO: 0 },
         iterations: [],
@@ -121,6 +129,8 @@ describe('json renderers', () => {
     expect(evidence.findings_resolved).toBeGreaterThan(0);
     expect(evidence.resolution_rate_pct).toBeGreaterThan(0);
     expect(evidence.tool).toBe('secure-review');
+    expect(evidence.findings).toHaveLength(1);
+    expect(evidence.findings?.[0]?.file).toBe('src/b.ts');
   });
 
   it('emits review evidence', () => {
@@ -145,5 +155,6 @@ describe('json renderers', () => {
     );
     expect(evidence.condition).toBe('F-review');
     expect(evidence.total_findings_initial).toBe(1);
+    expect(evidence.findings).toHaveLength(1);
   });
 });

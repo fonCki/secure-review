@@ -4,7 +4,9 @@
 [![npm downloads](https://img.shields.io/npm/dm/secure-review.svg)](https://www.npmjs.com/package/secure-review)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Multi-model security review for AI-generated code.** CLI and GitHub Action that runs several LLM reviewers (Anthropic, OpenAI, Google) and SAST tools (Semgrep, ESLint, npm audit) against your codebase. Findings are aggregated across reviewers — overlap becomes a confidence signal. Four modes: `scan` (SAST only), `review` (multi-model report), `fix` (cross-model rotating loop applies fixes), `pr` (GitHub Action entrypoint posting line-anchored comments).
+**Multi-model security review for AI-generated code.** CLI and GitHub Action that runs several LLM reviewers (Anthropic, OpenAI, Google) and SAST tools (Semgrep, ESLint, npm audit) against your codebase. Findings are aggregated across reviewers — overlap becomes a confidence signal. Modes: `scan` (SAST only), `review` (multi-model report), `fix` (cross-model rotating loop applies fixes), `pr` (GitHub Action entrypoint for static review), `estimate` (preview cost without running), `baseline` (mark known/accepted findings), `benchmark` (compare writer models), `compare` (A/B path diff), `reviewer-benchmark` (single vs multi-model reviewer comparison).
+
+**Live target testing** (deterministic `attack`, `attack-ai`, ZAP, Nuclei, browser-login hooks) lives in the companion package **`secure-review-runtime`**, which depends on this library for shared types and reporters. Install both if you need static review plus runtime probes.
 
 ```bash
 npm install --save-dev secure-review        # https://www.npmjs.com/package/secure-review
@@ -50,8 +52,13 @@ npx secure-review review ./src
 | `secure-review scan <path>` | SAST only — no AI calls, no API keys needed |
 | `secure-review review <path>` | Multi-model review, no file changes |
 | `secure-review fix <path>` | Iterative review → write → re-review loop |
+| `secure-review estimate <path> [--mode review\|fix]` | Print a pre-run cost estimate without invoking any model |
+| `secure-review baseline <findings.json> [--merge] [--reason ...]` | Create or update a `.secure-review-baseline.json` of known/accepted findings to suppress in subsequent runs |
+| `secure-review benchmark <path>` | Compare multiple writer models head-to-head on fix quality |
+| `secure-review compare <pathA> <pathB>` | Side-by-side security diff of two codebases |
+| `secure-review reviewer-benchmark <path>` | Show what each single model misses vs the combined multi-model ensemble |
 | `secure-review setup-secrets` | Push API keys from local `.env` to GitHub Action secrets via `gh` CLI |
-| `secure-review pr` | GitHub Action entry point (called by the workflow) |
+| `secure-review pr` | GitHub Action entry point: static multi-model **review** with PR inline comments (see `action.yml`) |
 
 > **One key is enough.** You don't need keys for all three providers — secure-review runs with as few as **one reader**, as long as the writer also uses an enabled provider. Disable any provider during `init` (or remove its entry from `.secure-review.yml`) and the tool simply doesn't instantiate that provider. This is useful if you only have an OpenAI key, or want to keep cost down to a single provider.
 
@@ -141,11 +148,25 @@ fix:
   mode: sequential_rotation             # verifier = reviewers[i % len] each iteration
   max_iterations: 3
   final_verification: all_reviewers
+  min_confidence_to_fix: 0             # only send findings with confidence >= this (0 = all)
+  min_severity_to_fix: INFO            # only send findings at or above this severity (INFO = all)
+
+# Optional: list additional writer models to benchmark head-to-head
+writers:
+  - provider: anthropic
+    model: claude-sonnet-4-6
+    skill: skills/secure-node-writer.md
+  - provider: openai
+    model: gpt-4o
+    skill: skills/secure-node-writer.md
 
 gates:
   block_on_new_critical: true
   max_cost_usd: 20
   max_wall_time_minutes: 15
+
+# Optional `dynamic:` block — preserved for YAML compatibility; runtime probing lives in
+# `secure-review-runtime`, not in core CLI modes.
 ```
 
 Every reviewer is a `{provider, model, skill}` triple. Skills are Markdown files defining the reviewer's role (web-sec pen-tester, OWASP auditor, supply-chain specialist, etc.). Write your own by copying `skills/*.md`.
@@ -182,17 +203,25 @@ Runs Semgrep, then ESLint, then npm audit, and normalizes their output to the sa
 ### `review` — multi-model parallel one-shot
 
 ```bash
-secure-review review ./src
+secure-review review ./src                 # full scan (asks before running once cost is shown)
+secure-review review ./src --since main    # only files changed since `main`
+secure-review review ./src --baseline none # ignore any local .secure-review-baseline.json
+secure-review review ./src --yes           # skip the cost-estimate prompt
 ```
 
-SAST runs first, then every reader (e.g. anthropic-haiku + openai-mini + gemini-flash) scans the **same code** with the SAST findings passed as prior context when enabled. Reviewers run in parallel by default; set `review.parallel: false` in `.secure-review.yml` to run them sequentially. Findings are deduped by `{file, line-bucket, CWE-or-title-prefix}` — overlapping findings merge, and `reportedBy` accumulates names. Confidence per finding is `min(1, |reportedBy| / 3)`, so a finding flagged by 2 of 3 reporters is high-confidence.
+SAST runs first, then every reader (e.g. anthropic-haiku + openai-mini + gemini-flash) scans the **same code** with the SAST findings passed as prior context when enabled. Reviewers run in parallel by default; set `review.parallel: false` in `.secure-review.yml` to run them sequentially. Findings are deduped by `{file, line-bucket}` — overlapping findings at the same location merge regardless of CWE or title (models assign different CWEs to the same bug), and `reportedBy` accumulates names. Confidence per finding is `min(1, |reportedBy| / 3)`, so a finding flagged by 2 of 3 reporters is high-confidence. The report sorts findings by agreement count descending and highlights multi-model agreement with a badge.
 
-No file mutations. Output: `reports/review-<timestamp>.{md,json}`.
+If a `.secure-review-baseline.json` is present in the scan root (or `--baseline <path>` is set), findings whose fingerprint matches an entry are excluded from the headline `findings` array (still recorded under `baselineSuppressed` for transparency). With `--since <ref>`, only files changed since that git ref are reviewed — useful on iterative PR workflows where the full tree hasn't changed.
+
+No file mutations. Output: `reports/review-<timestamp>.{md,html,json}`. The HTML report is a single self-contained file (inline CSS + vanilla JS, no external assets) with sortable/filterable findings, severity badges, agreement counts, and collapsible per-finding detail. Open it in any browser; works offline.
 
 ### `fix` — cross-model rotating loop *(0.5.0+ semantics)*
 
 ```bash
 secure-review fix ./src --max-iterations 3 --max-cost-usd 20
+secure-review fix ./src --since main                  # only files changed since `main`
+secure-review fix ./src --baseline ./baseline.json    # use a specific baseline file
+secure-review fix ./src --yes --no-estimate           # CI-friendly: skip prompt + skip preview
 ```
 
 The mode that actually fixes things. Three phases:
@@ -201,15 +230,72 @@ The mode that actually fixes things. Three phases:
 2. **Iteration loop** (rotating verifier per iter):
    - Step A: Writer applies fixes for the current findings list (iter 1: union; iter 2+: previous verifier's audit).
    - Step B: Next reader in rotation audits the writer's output with fresh eyes (different model = different blind spots).
-   - Step C: That audit becomes the next iteration's input.
-   - The loop only exits when **N consecutive verifiers** all see clean (full rotation), or a gate fires (`block_on_new_critical`, `max_cost_usd`, `max_wall_time_minutes`).
+   - Step C: Baseline filter + stable-ID annotation, then the audit becomes the next iteration's input.
+   - The loop only exits when **N consecutive verifiers** all see clean (full rotation), or a gate fires (`block_on_new_critical`, `max_cost_usd`, `max_wall_time_minutes`), or divergence is detected.
 3. **Final verification** — by default, all readers in parallel re-scan the final state. Catches anything the per-iteration verifiers missed individually.
 
 The writer is **always the same model**; the verifier rotates. This prevents the writer from drifting toward "code that satisfies one specific model" — every iteration a different judge shows up.
 
+**Safety controls:**
+- **Pre-run cost estimate** — before any model call, print a token-cost projection per model (point + ±30% band) and (in interactive shells) prompt for confirmation. `--yes` skips the prompt; `--no-estimate` skips the preview entirely. In CI / non-TTY contexts the estimate is printed but the run proceeds without prompting (`gates.max_cost_usd` remains the budget contract). Standalone preview: `secure-review estimate ./src --mode fix`.
+- **Run caps** — `gates.max_cost_usd` and `gates.max_wall_time_minutes` stop runaway fix loops. For one-off longer runs, use `secure-review fix ... --max-wall-time-minutes 60` instead of editing YAML.
+- **Baseline / FP suppression** — findings whose fingerprint matches `.secure-review-baseline.json` are filtered before the writer ever sees them and never appear in the `remaining` set, so the loop spends only on net-new issues.
+- **Stable finding IDs across iterations** — every finding is assigned a session-scoped `S-NNN` keyed on `{file, line-bucket}`. The same bug keeps the same ID even when the verifier rephrases it, so the per-iteration `resolved` and `introduced` deltas in the report reflect actual writer effects, not relabeling.
+- **Rollback** — if the writer introduces a new CRITICAL finding *and* a gate fires, the loop rolls back to the pre-iteration snapshot before stopping. New files created by the writer are also removed.
+- **Divergence detection** — if total findings grow for 2 consecutive iterations, the loop stops to prevent regression spirals (the F2 failure mode).
+- **Filtering** — configure `min_confidence_to_fix` and `min_severity_to_fix` in the config to limit what the writer attempts (e.g. only fix HIGH+ findings with ≥50% confidence).
+- **Incremental mode** — `--since <ref>` restricts the entire pipeline (SAST + readers + writer + final verification) to files Git reports as changed since that ref.
+
 > Earlier versions (pre-0.5.0) used a different loop: each iteration's reviewer scanned alone, single-reviewer-zero exited the loop early, and the initial scan was a vanity baseline metric. See [CHANGELOG.md](CHANGELOG.md) for the migration notes.
 
-Output: `reports/fix-<timestamp>.{md,json}` plus modified source files.
+Output: `reports/fix-<timestamp>.{md,html,json}` plus the unified diff (`fix-<timestamp>.patch`) and modified source files. The HTML report adds a before/after delta block and a per-iteration timeline with the resolved/introduced split per iteration — useful for thesis presentations and code-review walk-throughs.
+
+### `benchmark` — compare writer models
+
+```bash
+secure-review benchmark ./src
+```
+
+Runs the initial full scan to get a baseline finding set, then for each writer model configured under `writers:` in the config: applies one round of fixes, re-scans with all reviewers, measures how many findings were resolved vs introduced, and restores files before running the next writer. Produces a markdown comparison table.
+
+```yaml
+# .secure-review.yml — add a writers array to benchmark multiple models
+writers:
+  - provider: anthropic
+    model: claude-sonnet-4-6
+    skill: skills/secure-node-writer.md
+  - provider: openai
+    model: gpt-4o
+    skill: skills/secure-node-writer.md
+```
+
+Output: `reports/benchmark-<timestamp>.md`
+
+### `compare` — A/B path security diff
+
+```bash
+secure-review compare ./v1 ./v2
+```
+
+Reviews two directories in parallel and produces a side-by-side report: findings unique to A, findings unique to B, findings common to both, and an overall delta (`better` / `worse` / `same`). Useful for comparing AI-generated vs human-written code, or before/after a refactor.
+
+Output: `reports/compare-<timestamp>.md`
+
+### `reviewer-benchmark` — single vs combined multi-model
+
+```bash
+secure-review reviewer-benchmark ./src
+```
+
+Answers the question: *what does each individual model miss that the ensemble catches?* Runs each configured reviewer in isolation (+ SAST), then compares against the full multi-model aggregate. The report shows:
+
+- Per-model blind spot percentage (findings in combined that the solo model missed)
+- Unique contributions per model (findings only that model found)
+- Multi-model agreement breakdown on the combined finding set
+
+This is the empirical justification for the multi-model design — no single model catches everything.
+
+Output: `reports/reviewer-benchmark-<timestamp>.md`
 
 ### `pr` — GitHub Action entrypoint
 
@@ -257,15 +343,38 @@ Every run emits a self-contained JSON with per-iteration counts and severity bre
 
 The same schema is used by both `review` and `fix` modes. Review-only runs use `condition: "F-review"` and set the before/after finding counts to the same values because no fixes are applied.
 
-## Developing
+Runtime evidence JSON from **`secure-review-runtime`** uses `condition: "F-attack"` or `"F-attack-ai"`; see that package’s docs.
+
+## Developing and verifying
+
+Use this checklist when you change the tool or want confidence it behaves as documented in [WORKFLOW.md](WORKFLOW.md).
+
+### Automated (no API keys required for most tests)
 
 ```bash
 npm install
-npm run typecheck
-npm test
-npm run build         # library (dist/)
-npm run build:action  # Action bundle (dist-action/index.js) — commit with PRs that touch src/
+npm run typecheck          # TypeScript — catches broken imports/types
+npm test                   # Vitest — CLI, schema, reporters, core modes (mocked LLMs)
+npm run build              # library (dist/) — what `npx secure-review` runs via bin
+npm run build:action       # GitHub Action bundle (dist-action/index.js) — commit when src/ changes affect the action
 ```
+
+Most tests mock LLM adapters and spin short-lived HTTP servers on `127.0.0.1`; they do not call external APIs unless you add separate live checks yourself.
+
+### Smoke checks (fast, local)
+
+| Goal | Command |
+|------|---------|
+| CLI loads | `npx secure-review --help` |
+| Config + SAST path only | `npx secure-review scan ./src` (prints JSON summary to stdout; no report files) |
+| Cost math only | `npx secure-review estimate ./src --mode review` or `--mode fix` |
+| Runtime probes (optional) | Use **`secure-review-runtime`** against a live app — see that package’s README |
+
+After editing TypeScript under `src/`, run `npm run build` before expecting `npx secure-review` to pick up those changes (unless you invoke `node dist/cli.js` from a fresh build).
+
+### End-to-end with real models
+
+Requires provider keys in `.env` and consumes quota for AI-backed modes (`review`, `fix`, etc.). Inspect generated JSON under `reports/` and cross-check behavior with the mode pseudo-code in [WORKFLOW.md](WORKFLOW.md).
 
 ## License
 
