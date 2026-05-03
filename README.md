@@ -6,7 +6,7 @@
 
 **Multi-model security review for AI-generated code.** CLI and GitHub Action that runs several LLM reviewers (Anthropic, OpenAI, Google) and SAST tools (Semgrep, ESLint, npm audit) against your codebase. Findings are aggregated across reviewers — overlap becomes a confidence signal. Modes: `scan` (SAST only), `review` (multi-model report), `fix` (cross-model rotating loop applies fixes), `pr` (GitHub Action entrypoint for static review), `estimate` (preview cost without running), `baseline` (mark known/accepted findings), `benchmark` (compare writer models), `compare` (A/B path diff), `reviewer-benchmark` (single vs multi-model reviewer comparison).
 
-**Live target testing** (deterministic `attack`, `attack-ai`, ZAP, Nuclei, browser-login hooks) lives in the companion package **`secure-review-runtime`**, which depends on this library for shared types and reporters. Install both if you need static review plus runtime probes.
+**Live target testing** (deterministic `attack`, `attack-ai`, ZAP, Nuclei, browser-login hooks) lives in the companion package **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**, which depends on this library for shared types and reporters. Install both if you need static review plus runtime probes.
 
 ```bash
 npm install --save-dev secure-review        # https://www.npmjs.com/package/secure-review
@@ -166,7 +166,7 @@ gates:
   max_wall_time_minutes: 15
 
 # Optional `dynamic:` block — preserved for YAML compatibility; runtime probing lives in
-# `secure-review-runtime`, not in core CLI modes.
+# secure-review-runtime (https://github.com/sstaempfli/secure-review-runtime), not in core CLI modes.
 ```
 
 Every reviewer is a `{provider, model, skill}` triple. Skills are Markdown files defining the reviewer's role (web-sec pen-tester, OWASP auditor, supply-chain specialist, etc.). Write your own by copying `skills/*.md`.
@@ -343,7 +343,7 @@ Every run emits a self-contained JSON with per-iteration counts and severity bre
 
 The same schema is used by both `review` and `fix` modes. Review-only runs use `condition: "F-review"` and set the before/after finding counts to the same values because no fixes are applied.
 
-Runtime evidence JSON from **`secure-review-runtime`** uses `condition: "F-attack"` or `"F-attack-ai"`; see that package’s docs.
+Runtime evidence JSON from **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** uses `condition: "F-attack"` or `"F-attack-ai"`; see the repo for details.
 
 ## Developing and verifying
 
@@ -368,7 +368,7 @@ Most tests mock LLM adapters and spin short-lived HTTP servers on `127.0.0.1`; t
 | CLI loads | `npx secure-review --help` |
 | Config + SAST path only | `npx secure-review scan ./src` (prints JSON summary to stdout; no report files) |
 | Cost math only | `npx secure-review estimate ./src --mode review` or `--mode fix` |
-| Runtime probes (optional) | Use **`secure-review-runtime`** against a live app — see that package’s README |
+| Runtime probes (optional) | Use **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** against a live app |
 
 After editing TypeScript under `src/`, run `npm run build` before expecting `npx secure-review` to pick up those changes (unless you invoke `node dist/cli.js` from a fresh build).
 

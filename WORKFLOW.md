@@ -2,7 +2,7 @@
 
 How `secure-review` actually executes each mode. Pseudo-code matches the source — every step here corresponds to real code in `src/modes/` and `src/roles/`.
 
-**Layer 4** (live HTTP probes, ZAP/Nuclei, `attack` / `attack-ai` CLIs) is implemented in the sibling package **`secure-review-runtime`**, not in this repo. The sections below that describe those flows are retained as methodology reference until they are fully relocated.
+**Layer 4** (live HTTP probes, ZAP/Nuclei, `attack` / `attack-ai` CLIs) is implemented in the sibling package **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**, not in this repo. The sections below that describe those flows are retained as methodology reference until they are fully relocated.
 
 > The design choices in this tool are direct responses to failure modes measured in [`secure-code-despite-ai`](https://github.com/fonCki/secure-code-despite-ai). If something looks over-engineered, the next section explains which experimental finding motivates it.
 
@@ -33,9 +33,9 @@ For readers arriving from `secure-code-despite-ai`, here is how the four modes m
 | `review` | **D** (review phase), generalized to N models | Layers 2–3 (review only) | One-shot multi-model review. Adds the multi-reader union + confidence scoring that single-agent Condition D lacked. |
 | `fix` | **D** (full review → fix → re-review) | Layers 2–3 | Operationalizes Condition D's loop with the rotation + convergence guards motivated by F2 and F3. |
 | `pr` | The protocol's *"running on every commit"* requirement | Layers 2–3, gated | Operationalizes the research question's commit-time validation, scoped to the PR diff (static review only in core). |
-| `attack` / `attack-ai` | Layer-4 extension | Layer 4 | Provided by **`secure-review-runtime`** — deterministic probes and AI-planned probes vs a live URL. |
+| `attack` / `attack-ai` | Layer-4 extension | Layer 4 | Provided by **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** — deterministic probes and AI-planned probes vs a live URL. |
 
-Layer 4 is intentionally separate from static review and ships in **`secure-review-runtime`**.
+Layer 4 is intentionally separate from static review and ships in **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**.
 
 ---
 
@@ -359,7 +359,7 @@ Runs deterministic HTTP checks against a live target URL. No model calls, no API
 ```
 </details>
 
-Example (requires **`secure-review-runtime`** — same flags as before):
+Example (requires **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** — same flags as before):
 
 ```
 npx secure-review-runtime attack . --target-url http://localhost:3000
@@ -394,9 +394,9 @@ dynamic:
   #   Cookie: "session=..."
 ```
 
-This is the deterministic runtime foundation (implemented in **`secure-review-runtime`**). For model-guided runtime testing, use **`attack-ai`** there.
+This is the deterministic runtime foundation (implemented in **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**). For model-guided runtime testing, use **`attack-ai`** there.
 
-**Authenticated probing:** `dynamic.auth_headers` and **`secure-review-runtime`** CLI `-H "Name: value"` are merged onto every Layer 4 `fetch` so headers/cookies/CORS/sensitive_paths checks and **`attack-ai`** crawl/probes can run as a logged-in user — without browser automation.
+**Authenticated probing:** `dynamic.auth_headers` and **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** CLI `-H "Name: value"` are merged onto every Layer 4 `fetch` so headers/cookies/CORS/sensitive_paths checks and **`attack-ai`** crawl/probes can run as a logged-in user — without browser automation.
 
 ---
 
@@ -440,7 +440,7 @@ Runs a bounded same-origin crawl, asks an attacker model to propose safe hypothe
 ```
 </details>
 
-Example (**`secure-review-runtime`**):
+Example (**[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**):
 
 ```
 npx secure-review-runtime attack-ai . --target-url http://localhost:3000
@@ -629,12 +629,12 @@ Three safety nets keep the tool running under transient failures:
 
 ## Verifying locally
 
-**This repository (`secure-review`)** implements static modes (`scan`, `review`, `fix`, …). The pseudo-code for **`attack`** / **`attack-ai`** below describes behavior implemented in **`secure-review-runtime`**, not paths under this repo.
+**This repository (`secure-review`)** implements static modes (`scan`, `review`, `fix`, …). The pseudo-code for **`attack`** / **`attack-ai`** below describes behavior implemented in **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**, not paths under this repo.
 
-1. **Automated suite (this repo)** — From the repo root: `npm run typecheck` and `npm test` (Vitest). Tests cover parsing, aggregation, static reporters, **`fix`** rotation / gates / reviewer health, and related CLI options — **not** live HTTP attack fixtures (those moved to **`secure-review-runtime`**).
-2. **Runtime package** — In **`secure-review-runtime`**: `npm install && npm test` after linking `secure-review` (see that repo’s README). Use **`npx secure-review-runtime attack …`** / **`attack-ai …`** against a local server when validating Layer 4.
+1. **Automated suite (this repo)** — From the repo root: `npm run typecheck` and `npm test` (Vitest). Tests cover parsing, aggregation, static reporters, **`fix`** rotation / gates / reviewer health, and related CLI options — **not** live HTTP attack fixtures (those moved to **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**).
+2. **Runtime package** — Clone or open **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**: `npm install && npm test` after linking `secure-review`. Use **`npx secure-review-runtime attack …`** / **`attack-ai …`** against a local server when validating Layer 4.
 3. **No-key smoke** — `secure-review scan <path>` loads config and runs SAST only (stdout JSON). `secure-review --help` confirms static CLI wiring.
-4. **Deterministic Layer 4** — With your app listening, run **`secure-review-runtime`** (see its README), then inspect `reports/attack-*.json` (`condition: "F-attack"`).
+4. **Deterministic Layer 4** — With your app listening, run **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** from that repo, then inspect `reports/attack-*.json` (`condition: "F-attack"`).
 
 Full checklist (including `estimate`, `build`, and `build:action`): [README § Developing and verifying](README.md#developing-and-verifying).
 
@@ -644,7 +644,7 @@ Full checklist (including `estimate`, `build`, and `build:action`): [README § D
 
 Adapted from `secure-code-despite-ai`'s Section 13 threats-to-validity. None of these are bugs — they're scope boundaries the tool acknowledges so users calibrate trust accordingly.
 
-- **Automation boundary.** **This package** covers static + AI review (layers 1–3). **Layer 4** — deterministic `attack`, bounded same-origin `attack-ai`, optional **ZAP** / **Nuclei**, and **browser-login-script** hooks — ships in **`secure-review-runtime`**. Built-in probes there remain **bounded** (same-origin-safe categories in `attack-ai`; no autonomous exploit chains beyond configured scanners **plus** Nuclei traffic you explicitly enable).
+- **Automation boundary.** **This package** covers static + AI review (layers 1–3). **Layer 4** — deterministic `attack`, bounded same-origin `attack-ai`, optional **ZAP** / **Nuclei**, and **browser-login-script** hooks — ships in **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**. Built-in probes there remain **bounded** (same-origin-safe categories in `attack-ai`; no autonomous exploit chains beyond configured scanners **plus** Nuclei traffic you explicitly enable).
 - **Non-determinism.** AI readers and writers produce different outputs on the same input. The JSON evidence records `model_version` per run, but temperature and seed are not pinned uniformly across providers (and some providers don't expose seeds at all). Studies should plan multiple runs per condition, mirroring the protocol's 3-runs-per-task baseline.
 - **TP/FP labeling stays human.** Aggregation downweights single-source findings via `confidence`, but final true-positive vs. false-positive classification still requires a human or a separate evaluation harness. The tool surfaces evidence; it does not adjudicate.
 - **Provider model evolution.** Models change between runs — the protocol calls this out explicitly as a threat to reproducibility. JSON evidence captures `model_version` and `timestamp` so historical comparisons remain auditable even when not byte-reproducible.
@@ -660,7 +660,7 @@ Adapted from `secure-code-despite-ai`'s Section 13 threats-to-validity. None of 
 - `reports/<mode>-<timestamp>.html` — self-contained interactive report (inline CSS + JS, no external assets). Sortable/filterable findings list, collapsible details per finding, fix-mode adds a before/after delta + per-iteration timeline. Works offline; safe to commit, attach to a PR comment, or open from a CI artifact.
 - `reports/<mode>-<timestamp>.json` — structured evidence JSON, schema-stable across versions (defined in `src/findings/schema.ts`).
 
-**`secure-review-runtime`** (`attack` / `attack-ai`) emits:
+**[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** (`attack` / `attack-ai`) emits:
 
 - `reports/attack-<timestamp>.md` — human-readable runtime probe report.
 - `reports/attack-<timestamp>.json` — structured runtime evidence (`condition: "F-attack"`) including `target_url`, `checks`, `runtime_findings`, `gate_blocked`, and `gate_reasons`.
@@ -668,7 +668,7 @@ Adapted from `secure-code-despite-ai`'s Section 13 threats-to-validity. None of 
 - `reports/attack-ai-<timestamp>.md` — human-readable AI attack simulation report.
 - `reports/attack-ai-<timestamp>.json` — structured runtime evidence (`condition: "F-attack-ai"`) including `target_url`, `crawled_pages`, `hypotheses`, `probes`, `runtime_findings`, safety `limits`, `gate_blocked`, and `gate_reasons`.
 
-The JSON schema is **deliberately compatible with `secure-code-despite-ai`'s Condition D evidence format** — **`secure-review`** runs use `condition: "F-review"` or `"F-fix"`; **`secure-review-runtime`** adds `"F-attack"` and `"F-attack-ai"` so results plot alongside the original A/B/C/D baselines. Think of the combined toolchain as **Condition F**: an extension of the original experimental matrix, not a parallel format.
+The JSON schema is **deliberately compatible with `secure-code-despite-ai`'s Condition D evidence format** — **`secure-review`** runs use `condition: "F-review"` or `"F-fix"`; **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** adds `"F-attack"` and `"F-attack-ai"` so results plot alongside the original A/B/C/D baselines. Think of the combined toolchain as **Condition F**: an extension of the original experimental matrix, not a parallel format.
 
 ### Mapping to research metrics
 

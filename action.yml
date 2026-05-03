@@ -10,7 +10,7 @@ inputs:
     required: false
     default: '.secure-review.yml'
   mode:
-    description: 'Static review only. `fix` is a deprecated alias for `review` (multi-model audit + PR comments). For live target probes, ZAP, or Nuclei, use the `secure-review-runtime` package instead.'
+    description: 'Static review only. `fix` is a deprecated alias for `review` (multi-model audit + PR comments). For live target probes, ZAP, or Nuclei, use secure-review-runtime (https://github.com/sstaempfli/secure-review-runtime).'
     required: false
     default: 'review'
   max-cost-usd:
