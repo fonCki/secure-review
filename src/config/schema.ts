@@ -54,7 +54,7 @@ export type DynamicCheck = z.infer<typeof DynamicCheck>;
 
 export const DynamicConfig = z.object({
   enabled: z.boolean().default(false),
-  /** Optional runtime target. Can also be supplied with `secure-review attack --target-url`. */
+  /** Optional runtime target (used by `secure-review-runtime`; overridable with `--target-url` there). */
   target_url: z.string().url().optional(),
   healthcheck_url: z.string().url().optional(),
   timeout_seconds: z.number().int().positive().max(600).default(30),

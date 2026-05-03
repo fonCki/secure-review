@@ -2,6 +2,27 @@
 
 All notable changes to `secure-review`. Newest first.
 
+## [1.0.0] — 2026-05-03
+
+Breaking release: **runtime Layer 4 is split out** into the companion npm package **`secure-review-runtime`** (`attack`, `attack-ai`, ZAP/Nuclei, browser-login hooks, and runtime PR posting). This repo stays **static-only** (`scan`, `review`, `fix`, `pr`, benchmarks, etc.).
+
+### Removed / breaking
+
+- CLI subcommands **`attack`** and **`attack-ai`**; all **`--pentest-*`**, **`--browser-login-script`**, and **`fix`** flags that only served **`attack-ai`** (`--attack-*`, `--attack-every-iter`, …).
+- GitHub Action inputs **`runtime-mode`**, **`target-url`**, **`pentest-scanners`**, **`browser-login-script`**, **`auth-headers-json`**, **`runtime-timeout-seconds`** — use **`secure-review-runtime`**’s Action for those workflows.
+- Public exports **`runAttackMode`**, **`runAttackAiMode`**, attack types, and **`renderAttack*`** / **`renderAttack*Evidence`** from the main package.
+- Source under **`src/modes/attack*.ts`** and **`src/pentest/`** (moved to **`secure-review-runtime`**).
+- **`fix` mode** no longer runs an **attack-ai** hook; the loop is **static-only** (snapshot/rollback and divergence detection unchanged).
+
+### Added (API for the runtime package)
+
+- Re-exports: **`readSourceTree`**, **`serializeCodeContext`**, **`writeFileSafe`**, **`FileContent`**, **`agreementCount`**, **`log`** / **`setQuiet`** / **`setVerbose`**, **`mergeAuthHeaders`**.
+- **`evaluateRuntimePrGate`** remains in core for shared gate logic.
+
+### Docs
+
+- README and WORKFLOW point to **`secure-review-runtime`** for live targets and external scanners.
+
 ## [0.5.13] — 2026-04-29
 
 First external contribution. All three changes from PR #1 by [@sstaempfli](https://github.com/sstaempfli) (Shana Stampfli) — caught while she was using the tool on her own work.
