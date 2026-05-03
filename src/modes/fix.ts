@@ -17,7 +17,7 @@ import { log } from '../util/logger.js';
 import { summarizeReviewHealth, type ReviewHealthStatus } from '../util/review-health.js';
 import { spinner } from '../util/spinner.js';
 import { resolve } from 'node:path';
-import { rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 
 export interface FixModeInput {
   root: string;
@@ -86,6 +86,39 @@ export function snapshotFiles(files: FileContent[]): Map<string, string> {
   const snap = new Map<string, string>();
   for (const f of files) snap.set(normalizeRelPath(f.relPath), f.content);
   return snap;
+}
+
+/**
+ * Augment a snapshot with on-disk content for any extra repo-relative paths
+ * not already covered. Used to cover the gap between `beforeFiles` (which is
+ * scoped by `--since`) and `allowedFiles` (which can include paths from
+ * findings outside the incremental subset). Without this, a writer touching
+ * a pre-existing file outside the snapshot would be misclassified as having
+ * "created" the file at rollback time, and the rollback would `rm` it.
+ *
+ * Bug 3 (PR #3 audit). Reads each missing path from disk; silently skips
+ * paths that don't exist (those are genuinely writer-created if the writer
+ * later reports having written them).
+ */
+export async function augmentSnapshot(
+  snapshot: Map<string, string>,
+  root: string,
+  extraRelPaths: Iterable<string>,
+): Promise<void> {
+  const rootAbs = resolve(root);
+  for (const raw of extraRelPaths) {
+    const relPath = normalizeRelPath(raw);
+    if (snapshot.has(relPath)) continue;
+    const abs = resolve(rootAbs, relPath);
+    try {
+      const content = await readFile(abs, 'utf8');
+      snapshot.set(relPath, content);
+    } catch {
+      // Doesn't exist on disk → genuinely a writer-created path if it
+      // appears in writerTouchedRelPaths later. Leave out of snapshot so
+      // restoreSnapshot's deletion path can fire.
+    }
+  }
 }
 
 /** Options for {@link restoreSnapshot}. */
@@ -307,6 +340,17 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
         ...beforeFiles.map((f) => normalizeRelPath(f.relPath)),
         ...findingsToFix.map((f) => normalizeRelPath(f.file)),
       ]);
+      // Bug 3 (PR #3 audit): in --since mode, beforeFiles is the incremental
+      // subset but allowedFiles can include paths from findings outside the
+      // subset (LLM reviewers can mention out-of-scope files even after
+      // Bug 9's SAST post-filter). If the writer touches such a pre-existing
+      // file and we later roll back, restoreSnapshot would mis-classify it
+      // as "writer-created" and `rm` it. We pre-read every allowedFiles path
+      // not in beforeFiles so the snapshot covers the full surface the
+      // writer might touch. Paths that don't exist on disk are intentionally
+      // skipped — those are genuinely writer-created if the writer reports
+      // them later.
+      await augmentSnapshot(preWriterSnapshot, root, allowedFiles);
 
       // Improvement 7: filter findings by confidence and severity thresholds
       const minConf = config.fix.min_confidence_to_fix ?? 0;

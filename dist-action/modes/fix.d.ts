@@ -70,6 +70,19 @@ export interface FixModeOutput {
 }
 /** Capture a snapshot of file contents keyed by relPath. */
 export declare function snapshotFiles(files: FileContent[]): Map<string, string>;
+/**
+ * Augment a snapshot with on-disk content for any extra repo-relative paths
+ * not already covered. Used to cover the gap between `beforeFiles` (which is
+ * scoped by `--since`) and `allowedFiles` (which can include paths from
+ * findings outside the incremental subset). Without this, a writer touching
+ * a pre-existing file outside the snapshot would be misclassified as having
+ * "created" the file at rollback time, and the rollback would `rm` it.
+ *
+ * Bug 3 (PR #3 audit). Reads each missing path from disk; silently skips
+ * paths that don't exist (those are genuinely writer-created if the writer
+ * later reports having written them).
+ */
+export declare function augmentSnapshot(snapshot: Map<string, string>, root: string, extraRelPaths: Iterable<string>): Promise<void>;
 /** Options for {@link restoreSnapshot}. */
 export type RestoreSnapshotOptions = {
     /**
