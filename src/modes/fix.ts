@@ -368,32 +368,18 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
         `  ${verifier.ref.name} sees ${findingsAfter.length} finding(s) post-fix · resolved ${diff.resolved.length} · introduced ${diff.introduced.length} (${newCritical} CRITICAL)`,
       );
 
-      // Improvement 4: convergence detection — stop if findings grew 2 consecutive iters
+      // Improvement 4: convergence detection — stop if findings grew 2 consecutive iters.
+      // Bug 6 (PR #3 audit): the divergence check used to `break` HERE, before
+      // gate evaluation. That meant a divergent iteration that ALSO introduced
+      // new CRITICALs would exit the loop without firing `block_on_new_critical`
+      // and without rolling back the writer's bad changes. We now compute the
+      // streak, push the iteration ONCE, run gates (including rollback), and
+      // only break at the END of the iteration if divergence triggered.
       const currentFindingCount = findingsAfter.length;
+      let divergenceTriggered = false;
       if (currentFindingCount > prevFindingCount) {
         divergenceStreak += 1;
-        if (divergenceStreak >= 2) {
-          log.warn(
-            'Divergence detected (findings grew 2 consecutive iterations) — stopping loop early to prevent regression',
-          );
-          iterations.push({
-            iteration: i + 1,
-            reviewer: verifier.ref.name,
-            reviewerRun: verifierRun,
-            sastBefore: summarizeSast(sastBeforeRun),
-            sastAfter: summarizeSast(sastAfterRun),
-            writerRun,
-            findingsBefore: findingsToFix,
-            findingsAfter,
-            resolvedFindings: diff.resolved,
-            introducedFindings: diff.introduced,
-            newCritical,
-            resolved: diff.resolved.length,
-            costUSD: (writerRun?.usage.costUSD ?? 0) + verifierRun.usage.costUSD,
-          });
-          currentFindings = findingsAfter;
-          break;
-        }
+        if (divergenceStreak >= 2) divergenceTriggered = true;
       } else {
         divergenceStreak = 0;
       }
@@ -415,7 +401,8 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
         costUSD: (writerRun?.usage.costUSD ?? 0) + verifierRun.usage.costUSD,
       });
 
-      // Gates
+      // Gates — run BEFORE divergence break so rollback + gate-blocked status
+      // still apply to a divergent iteration that also tripped a gate.
       const decision = evaluateGates(
         {
           beforeFindings: findingsToFix,
@@ -444,6 +431,13 @@ export async function runFixMode(input: FixModeInput): Promise<FixModeOutput> {
       }
 
       currentFindings = findingsAfter;
+
+      if (divergenceTriggered) {
+        log.warn(
+          'Divergence detected (findings grew 2 consecutive iterations) — stopping loop early to prevent regression',
+        );
+        break;
+      }
 
       // Early exit: only when a FULL ROTATION of readers all see clean.
       // Prevents a single lenient reader from prematurely ending the loop.

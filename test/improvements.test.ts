@@ -513,4 +513,132 @@ describe('runFixMode divergence detection', () => {
     // Should not be gate-blocked (divergence stops the loop but doesn't set gateBlocked)
     // The divergence breaks out of loop, final verification is 'none' so no extra calls
   });
+
+  it('Bug 6: a divergent iteration that ALSO introduces a new CRITICAL must trigger the gate (rollback + gateBlocked) instead of silently breaking on divergence', async () => {
+    // Pre-fix behavior: when both `divergenceStreak >= 2` AND a new CRITICAL
+    // appear on the SAME iteration, the divergence-break exited the loop
+    // BEFORE evaluateGates, so `block_on_new_critical` never fired and the
+    // writer's bad changes were silently kept.
+    //
+    // Post-fix: divergence is recorded as a flag; the iteration is pushed
+    // ONCE; gates evaluate (rolling back the writer's changes for new
+    // CRITICALs); only then do we break on the divergence flag.
+    //
+    // The test scenario must:
+    //   - have streak=2 IN THE SAME ITERATION as the new CRITICAL
+    //   - so iter 1 must grow but NOT introduce CRITICAL (streak=1, no gate)
+    //   - and iter 2 must grow AND introduce a new CRITICAL (streak=2 + gate)
+
+    vi.resetModules();
+
+    // Use a writer-distinct config so the adapter mock can demux by model.
+    // Writer model = 'writer-model'; reviewer model = 'reviewer-model'.
+    const writerCalls: string[] = [];
+    const verifierCallSequence: Array<Finding[]> = [];
+
+    vi.doMock('../src/adapters/factory.js', () => ({
+      getAdapter: vi.fn((ref: { provider: string; model: string }): ModelAdapter => ({
+        provider: ref.provider as ModelAdapter['provider'],
+        mode: 'api',
+        complete: vi.fn(async (_input: CompleteInput): Promise<CompleteOutput> => {
+          if (ref.model === 'writer-model') {
+            writerCalls.push(ref.model);
+            return {
+              // Valid writer payload — claims to change app.ts so the
+              // rollback path has something to rm/restore on gate trigger.
+              text: JSON.stringify({ changes: [{ file: 'app.ts', content: 'export const x = 2;' }] }),
+              usage: { inputTokens: 1, outputTokens: 1, costUSD: 0.01 },
+              durationMs: 1,
+            };
+          }
+          // Reviewer/verifier — drain the verifier sequence.
+          const findings = verifierCallSequence.shift() ?? [];
+          return {
+            text: JSON.stringify({ findings }),
+            usage: { inputTokens: 1, outputTokens: 1, costUSD: 0.01 },
+            durationMs: 1,
+          };
+        }),
+      })),
+    }));
+
+    vi.doMock('../src/config/load.js', () => ({
+      loadSkill: vi.fn(async () => '# Skill'),
+      resolveSkillPath: vi.fn((s: string) => s),
+    }));
+
+    vi.doMock('../src/sast/index.js', () => ({
+      runAllSast: vi.fn(async () => ({
+        findings: [],
+        semgrep: { ran: false, count: 0 },
+        eslint: { ran: false, count: 0 },
+        npmAudit: { ran: false, count: 0 },
+      })),
+    }));
+
+    vi.doMock('../src/util/files.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../src/util/files.js')>();
+      return {
+        ...actual,
+        readSourceTree: vi.fn(async () => [
+          { path: '/repo/app.ts', relPath: 'app.ts', content: 'export const x = 1;', lines: 1 },
+        ]),
+        writeFileSafe: vi.fn(async () => {}),
+      };
+    });
+
+    vi.doMock('node:fs/promises', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:fs/promises')>();
+      return { ...actual, rm: vi.fn(async () => {}), writeFile: vi.fn(async () => {}) };
+    });
+
+    const { runFixMode } = await import('../src/modes/fix.js');
+
+    // Sequence designed to corner Bug 6:
+    //   initial: [LOW]                       — count = 1
+    //   iter 1:  [LOW, LOW2]                 — grew 1→2, NO new CRITICAL → streak=1
+    //   iter 2:  [LOW, LOW2, NEW_CRITICAL]   — grew 2→3, +1 CRITICAL    → streak=2
+    //
+    // Pre-fix: at iter 2, divergence-break runs FIRST (streak>=2), exits
+    // loop without evaluating gates → gateBlocked stays false even though
+    // a CRITICAL was introduced.
+    //
+    // Post-fix: at iter 2, gates evaluate FIRST (block_on_new_critical
+    // fires), rollback happens, gateBlocked = true → divergence flag is
+    // moot because we already broke via gate.
+    const baseFinding = mkFinding({ severity: 'LOW', cwe: 'CWE-001', file: 'a.ts', lineStart: 0 });
+    const baseLow2 = mkFinding({ severity: 'LOW', cwe: 'CWE-002', file: 'b.ts', lineStart: 0 });
+    const newCrit = mkFinding({ severity: 'CRITICAL', cwe: 'CWE-100', file: 'c.ts', lineStart: 0 });
+
+    verifierCallSequence.push(
+      [baseFinding],                        // initial scan reviewer
+      [baseFinding, baseLow2],              // iter 1 verifier — grew 1→2, no critical → streak=1
+      [baseFinding, baseLow2, newCrit],     // iter 2 verifier — grew 2→3, +1 CRITICAL → streak=2 + new CRITICAL
+    );
+
+    const cfg = makeConfig(5);
+    cfg.writer = { provider: 'openai', model: 'writer-model', skill: 'w.md' };
+    cfg.reviewers = [{ name: 'r', provider: 'openai', model: 'reviewer-model', skill: 'r.md' }];
+    cfg.gates = { ...cfg.gates, block_on_new_critical: true };
+
+    const out = await runFixMode({
+      root: '/repo',
+      config: cfg,
+      configDir: '/repo',
+      env: {},
+    });
+
+    // Pre-fix bug: at iter 2, divergence-break exits BEFORE evaluateGates →
+    // gateBlocked stays false even though a CRITICAL was introduced.
+    // Post-fix: gates evaluate BEFORE divergence break → gate fires →
+    // rollback → gateBlocked = true.
+    expect(out.gateBlocked).toBe(true);
+    expect(out.gateReasons.length).toBeGreaterThan(0);
+    expect(out.gateReasons.join(' ')).toMatch(/CRITICAL/i);
+    // Two iterations should have run before the gate fired in iter 2.
+    expect(out.iterations.length).toBe(2);
+    // Writer must have fired in both iterations (rollback at iter 2 acts on
+    // the iter-2 writer's filesChanged set).
+    expect(writerCalls.length).toBe(2);
+  });
 });

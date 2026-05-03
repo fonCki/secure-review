@@ -221,21 +221,27 @@ for i in 0 .. (max_iterations - 1):
         .introduced = in audit but not in input
         .newCritical = introduced.filter(severity == CRITICAL).count
 
-    # Step D: Divergence detection — if findings grow 2 iterations in a row,
-    #   we're regressing; stop the loop before LOC growth runs away (per F2).
+    # Step D: Divergence detection — record a flag if findings grow 2
+    #   iterations in a row. The flag is consumed AFTER gates so a divergent
+    #   iteration that ALSO introduces a new CRITICAL still goes through
+    #   rollback + gateBlocked (Bug 6 fix; pre-fix the break ran here and
+    #   silently bypassed gates).
     if findingsAfter.length > prevFindingCount: divergenceStreak += 1
     else:                                       divergenceStreak  = 0
-    if divergenceStreak >= 2: break
+    divergenceTriggered = (divergenceStreak >= 2)
 
     # Step E: Gate evaluation — break early on any condition. If the writer
     #   introduced new CRITICAL(s) AND a gate fires, the loop also restores
     #   the pre-iteration snapshot before stopping (Improvement 3, fix.ts).
-    if config.gates.block_on_new_critical and newCritical > 0:    break
+    if config.gates.block_on_new_critical and newCritical > 0:    break  # rollback + gateBlocked=true
     if cumulativeCost > config.gates.max_cost_usd:                break
     if elapsedMs / 60000 > config.gates.max_wall_time_minutes:    break
 
     # Step F: Set up next iteration
     currentFindings = findingsAfter
+
+    # Step G: Divergence break (after gates so rollback can fire)
+    if divergenceTriggered: break
 
     # Step G: Stability check — only exit when N consecutive iters all clean
     if findingsAfter.empty:
