@@ -160,14 +160,37 @@ async function previewAndConfirmCost(
   scanRoot: string,
   config: Awaited<ReturnType<typeof loadConfig>>['config'],
   mode: EstimateMode,
-  flags: { yes: boolean; skipEstimate: boolean; quiet: boolean },
+  flags: { yes: boolean; skipEstimate: boolean; quiet: boolean; only?: Set<string>; since?: string },
 ): Promise<boolean> {
   if (flags.skipEstimate) return true;
-  const files = await readSourceTree(scanRoot, 200_000);
+  // Bug 8 (PR #3 audit): when --since is set the estimate must count only
+  // the incremental file subset, not the full tree. Pre-fix the estimate
+  // always read the full tree, so users running `review ./src --since main`
+  // on a 1000-file repo saw a $X cost based on 1000 files even when --since
+  // would scope it to 5 (or zero — combined with Bug 4 the estimate was
+  // 200x off in the worst case).
+  //
+  // Caller may pre-compute the `only` set and pass it via `flags.only` to
+  // avoid running `getGitChangedFiles` twice (once here, once in the
+  // action). When `flags.only` is provided we skip the git call entirely.
+  // `flags.since` remains accepted for callers that don't pre-compute,
+  // and is also used purely for the empty-set warning message.
+  const only = flags.only
+    ?? (flags.since ? await getGitChangedFiles(scanRoot, flags.since) : undefined);
+  const files = await readSourceTree(scanRoot, 200_000, only);
   if (files.length === 0) {
-    log.warn('No source files found under scan root — skipping cost estimate.');
+    if (flags.since) {
+      log.warn(`No source files matched --since ${flags.since} — skipping cost estimate (and the actual run will also be a no-op).`);
+    } else {
+      log.warn('No source files found under scan root — skipping cost estimate.');
+    }
     return true;
   }
+  // NOTE: token budgeting in `estimateRunCost` uses a fixed
+  // SAST_INJECTED_TOKENS constant which can over-estimate slightly under
+  // --since (Bug 9's post-filter shrinks the actual SAST injection set).
+  // Over-estimating is the safer direction; budget cap (gates.max_cost_usd)
+  // applies to actual runs, not the estimate.
   const estimate = estimateRunCost({ config, files, mode });
   if (!flags.quiet) {
     log.info(formatEstimateText(estimate, mode, config.gates.max_cost_usd));
@@ -348,16 +371,22 @@ async function main(): Promise<void> {
         const { config, configDir } = await loadConfig(opts.config);
         const env = loadEnv();
         const root = resolve(path);
+        // Compute the --since file set ONCE and pass it to both the cost
+        // estimate and the actual review (Bug 8 follow-up). Avoids running
+        // `git diff --name-only` twice on large repos and eliminates the
+        // tiny TOCTOU window between estimate and run.
+        const only = opts.since ? await getGitChangedFiles(root, opts.since) : undefined;
         const proceed = await previewAndConfirmCost(root, config, 'review', {
           yes: opts.yes,
           skipEstimate: opts.estimate === false,
           quiet: program.opts<{ quiet?: boolean }>().quiet === true,
+          only,
+          since: opts.since,
         });
         if (!proceed) {
           log.warn('Aborted by user before running review.');
           process.exit(0);
         }
-        const only = opts.since ? await getGitChangedFiles(root, opts.since) : undefined;
         if (only) log.info(`Incremental mode: ${only.size} file${only.size === 1 ? '' : 's'} changed since ${opts.since}`);
         const { baseline } = await resolveBaseline(root, opts.baseline);
         const output = await runReviewMode({ root, config, configDir, env, only, baseline });
@@ -442,16 +471,21 @@ async function main(): Promise<void> {
           applyMaxCostOverride(config, opts.maxCostUsd);
           applyMaxWallTimeOverride(config, opts.maxWallTimeMinutes);
           const root = resolve(path);
+          // Compute the --since file set ONCE and pass it to both the cost
+          // estimate and the actual fix (Bug 8 follow-up). Avoids two git
+          // calls + eliminates TOCTOU between estimate and run.
+          const only = opts.since ? await getGitChangedFiles(root, opts.since) : undefined;
           const proceed = await previewAndConfirmCost(root, config, 'fix', {
             yes: opts.yes,
             skipEstimate: opts.estimate === false,
             quiet: program.opts<{ quiet?: boolean }>().quiet === true,
+            only,
+            since: opts.since,
           });
           if (!proceed) {
             log.warn('Aborted by user before running fix.');
             process.exit(0);
           }
-          const only = opts.since ? await getGitChangedFiles(root, opts.since) : undefined;
           if (only) log.info(`Incremental mode: ${only.size} file${only.size === 1 ? '' : 's'} changed since ${opts.since}`);
           const { baseline } = await resolveBaseline(root, opts.baseline);
           const output = await runFixMode({ root, config, configDir, env, only, baseline });
@@ -612,7 +646,8 @@ async function main(): Promise<void> {
     .option('-c, --config <file>', 'config file', '.secure-review.yml')
     .option('-m, --mode <mode>', 'estimate for `review` or `fix` mode', 'fix')
     .option('--max-iterations <n>', 'override max iterations (fix mode)', parseMaxIterations)
-    .action(async (path: string, opts: { config: string; mode: string; maxIterations?: number }) => {
+    .option('--since <ref>', 'estimate for incremental scope (only files changed since this git ref)')
+    .action(async (path: string, opts: { config: string; mode: string; maxIterations?: number; since?: string }) => {
       try {
         const mode = opts.mode === 'review' ? 'review' : 'fix';
         if (opts.mode !== 'review' && opts.mode !== 'fix') {
@@ -620,9 +655,18 @@ async function main(): Promise<void> {
         }
         const { config } = await loadConfig(opts.config);
         if (opts.maxIterations !== undefined) config.fix.max_iterations = opts.maxIterations;
-        const files = await readSourceTree(resolve(path), 200_000);
+        const root = resolve(path);
+        // Bug 8 (PR #3 audit): standalone `estimate` subcommand also needs
+        // --since support so its output matches what `review`/`fix` will
+        // actually scan when run with the same flag.
+        const only = opts.since ? await getGitChangedFiles(root, opts.since) : undefined;
+        const files = await readSourceTree(root, 200_000, only);
         if (files.length === 0) {
-          log.warn('No source files found under scan root.');
+          if (opts.since) {
+            log.warn(`No source files matched --since ${opts.since}.`);
+          } else {
+            log.warn('No source files found under scan root.');
+          }
           return;
         }
         const estimate = estimateRunCost({ config, files, mode });
