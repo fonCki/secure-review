@@ -24,7 +24,11 @@ function mkFinding(file: string, reportedBy: string[], severity: Finding['severi
 }
 
 describe('filterSastByPaths — Bug 9', () => {
-  it('returns the summary unchanged when `only` is empty', () => {
+  it('drops everything when `only` is the empty set (incremental scope produced no files)', () => {
+    // Codex round-2 audit (Bug 8 follow-up): an empty `only` set means the
+    // caller's --since ref produced ZERO changed files. The pipeline must
+    // be a no-op for that scope, NOT silently fall back to a full scan.
+    // Pre-fix this returned the unfiltered summary (the wrong direction).
     const summary: SastSummary = {
       findings: [mkFinding('src/a.ts', ['semgrep'])],
       semgrep: { ran: true, count: 1 },
@@ -32,7 +36,10 @@ describe('filterSastByPaths — Bug 9', () => {
       npmAudit: { ran: false, count: 0 },
     };
     const result = filterSastByPaths(summary, new Set());
-    expect(result).toBe(summary); // identity, no copy needed
+    expect(result.findings).toEqual([]);
+    expect(result.semgrep.count).toBe(0);
+    // Per-tool ran/error fields are preserved even when findings are dropped.
+    expect(result.semgrep.ran).toBe(true);
   });
 
   it('drops findings whose file is not in the `only` set', () => {

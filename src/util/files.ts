@@ -70,11 +70,19 @@ export async function readSourceTree(
     const content = await readFile(abs, 'utf8');
     return [{ path: abs, relPath: basename(abs), content, lines: content.split('\n').length }];
   }
-  const files: FileContent[] = [];
-  await walk(abs, abs, files, maxBytesPerFile);
-  if (only && only.size > 0) {
+  // Empty `only` set is meaningful: the caller computed an incremental
+  // scope (e.g. via --since) and it produced ZERO files — meaning the
+  // pipeline should be a no-op for the current iteration. Returning the
+  // full tree here would silently invert the user's intent. Per Codex
+  // round-2 audit (Bug 8 follow-up).
+  if (only) {
+    if (only.size === 0) return [];
+    const files: FileContent[] = [];
+    await walk(abs, abs, files, maxBytesPerFile);
     return files.filter((f) => only.has(f.relPath));
   }
+  const files: FileContent[] = [];
+  await walk(abs, abs, files, maxBytesPerFile);
   return files;
 }
 

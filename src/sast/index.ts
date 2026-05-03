@@ -25,8 +25,11 @@ export interface SastSummary {
  * Bug 9 (PR #3 audit).
  */
 export function filterSastByPaths(summary: SastSummary, only: Set<string>): SastSummary {
-  if (only.size === 0) return summary;
-  const filtered = summary.findings.filter((f) => only.has(f.file));
+  // Empty set means "scope to nothing" (consistent with readSourceTree's
+  // empty-only semantics). Pre-fix this returned the unfiltered summary,
+  // which silently inverted the user's intent under --since refs that
+  // produced no changed files. Per Codex round-2 audit (Bug 8 follow-up).
+  const filtered = only.size === 0 ? [] : summary.findings.filter((f) => only.has(f.file));
   // Recompute per-tool counts from the filtered findings. We use the
   // `reportedBy` field which carries the source tool name (e.g., "semgrep").
   let semgrepCount = 0;

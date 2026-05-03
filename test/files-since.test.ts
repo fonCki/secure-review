@@ -150,4 +150,26 @@ describe('getGitChangedFiles — Bug 4 (PR #3 audit)', () => {
       await rm(nonRepo, { recursive: true, force: true });
     }
   });
+
+  it('returns an empty set when --since produces no changes (clean tree)', async () => {
+    await mkdir(join(repo, 'src'), { recursive: true });
+    await writeFile(join(repo, 'src', 'a.ts'), 'export const a = 1;\n');
+    await git(repo, 'add', '-A');
+    await git(repo, 'commit', '-q', '-m', 'init');
+
+    // No changes since HEAD — should return an empty set, NOT all files.
+    const result = await getGitChangedFiles(repo, 'HEAD');
+    expect(result.size).toBe(0);
+  });
+});
+
+describe('readSourceTree empty-only semantics — Bug 8 follow-up', () => {
+  it('returns [] when `only` is the empty set (caller signaled no-op scope)', async () => {
+    const { readSourceTree } = await import('../src/util/files.js');
+    // Use the secure-review repo itself as a fixture root (any populated
+    // directory will do — we just need readSourceTree to find SOMETHING in
+    // the unfiltered case so the empty-set short-circuit is meaningful).
+    const result = await readSourceTree(process.cwd(), 200_000, new Set());
+    expect(result).toEqual([]);
+  });
 });
