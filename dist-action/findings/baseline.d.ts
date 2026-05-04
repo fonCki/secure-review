@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Finding } from './schema.js';
+import { type Finding } from './schema.js';
 /**
  * Default file name for a baseline. `secure-review review` and
  * `secure-review fix` will auto-load this if it exists in the scan root,
@@ -14,7 +14,17 @@ export declare const BaselineEntrySchema: z.ZodObject<{
     lineStart: z.ZodOptional<z.ZodNumber>;
     title: z.ZodOptional<z.ZodString>;
     cwe: z.ZodOptional<z.ZodString>;
-    severity: z.ZodOptional<z.ZodString>;
+    /**
+     * Severity at the time the finding was baselined. Used by `applyBaseline`
+     * (Bug 2 fix, PR #3 audit) to refuse suppressing an INCOMING finding whose
+     * severity is HIGHER than the baselined one — a stale LOW baseline must
+     * not silently hide a later CRITICAL in the same bucket.
+     *
+     * Stored as the loose `Severity` enum string for JSON portability;
+     * `applyBaseline` re-validates and falls back to `INFO` if the field is
+     * absent (legacy baselines pre-Bug-2).
+     */
+    severity: z.ZodOptional<z.ZodEnum<["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]>>;
     /** Optional rationale: why this finding is accepted (TP-but-tolerated, FP, etc.). */
     reason: z.ZodOptional<z.ZodString>;
     /** ISO-8601 timestamp of when this entry was added. */
@@ -25,7 +35,7 @@ export declare const BaselineEntrySchema: z.ZodObject<{
     lineStart?: number | undefined;
     title?: string | undefined;
     cwe?: string | undefined;
-    severity?: string | undefined;
+    severity?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO" | undefined;
     reason?: string | undefined;
     acceptedAt?: string | undefined;
 }, {
@@ -34,7 +44,7 @@ export declare const BaselineEntrySchema: z.ZodObject<{
     lineStart?: number | undefined;
     title?: string | undefined;
     cwe?: string | undefined;
-    severity?: string | undefined;
+    severity?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO" | undefined;
     reason?: string | undefined;
     acceptedAt?: string | undefined;
 }>;
@@ -50,7 +60,17 @@ export declare const BaselineSchema: z.ZodObject<{
         lineStart: z.ZodOptional<z.ZodNumber>;
         title: z.ZodOptional<z.ZodString>;
         cwe: z.ZodOptional<z.ZodString>;
-        severity: z.ZodOptional<z.ZodString>;
+        /**
+         * Severity at the time the finding was baselined. Used by `applyBaseline`
+         * (Bug 2 fix, PR #3 audit) to refuse suppressing an INCOMING finding whose
+         * severity is HIGHER than the baselined one — a stale LOW baseline must
+         * not silently hide a later CRITICAL in the same bucket.
+         *
+         * Stored as the loose `Severity` enum string for JSON portability;
+         * `applyBaseline` re-validates and falls back to `INFO` if the field is
+         * absent (legacy baselines pre-Bug-2).
+         */
+        severity: z.ZodOptional<z.ZodEnum<["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]>>;
         /** Optional rationale: why this finding is accepted (TP-but-tolerated, FP, etc.). */
         reason: z.ZodOptional<z.ZodString>;
         /** ISO-8601 timestamp of when this entry was added. */
@@ -61,7 +81,7 @@ export declare const BaselineSchema: z.ZodObject<{
         lineStart?: number | undefined;
         title?: string | undefined;
         cwe?: string | undefined;
-        severity?: string | undefined;
+        severity?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO" | undefined;
         reason?: string | undefined;
         acceptedAt?: string | undefined;
     }, {
@@ -70,7 +90,7 @@ export declare const BaselineSchema: z.ZodObject<{
         lineStart?: number | undefined;
         title?: string | undefined;
         cwe?: string | undefined;
-        severity?: string | undefined;
+        severity?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO" | undefined;
         reason?: string | undefined;
         acceptedAt?: string | undefined;
     }>, "many">>;
@@ -81,7 +101,7 @@ export declare const BaselineSchema: z.ZodObject<{
         lineStart?: number | undefined;
         title?: string | undefined;
         cwe?: string | undefined;
-        severity?: string | undefined;
+        severity?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO" | undefined;
         reason?: string | undefined;
         acceptedAt?: string | undefined;
     }[];
@@ -97,7 +117,7 @@ export declare const BaselineSchema: z.ZodObject<{
         lineStart?: number | undefined;
         title?: string | undefined;
         cwe?: string | undefined;
-        severity?: string | undefined;
+        severity?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO" | undefined;
         reason?: string | undefined;
         acceptedAt?: string | undefined;
     }[] | undefined;
@@ -110,7 +130,24 @@ export interface BaselineFilterResult {
     /** Findings that DID match — i.e. were suppressed. */
     suppressed: Finding[];
 }
-/** Apply a baseline to a list of findings. Pure function; no I/O. */
+/**
+ * Apply a baseline to a list of findings.
+ *
+ * Bug 2 (PR #3 audit): severity-aware suppression. Pre-fix the matcher was
+ * a `Set<fingerprint>` — any incoming finding whose fingerprint matched a
+ * baseline entry was silently suppressed regardless of severity. Live
+ * smoke test reproduced 3 CRITICALs being hidden by a single stale LOW
+ * baseline entry in the same bucket.
+ *
+ * Post-fix: refuse to suppress when the incoming finding's severity is
+ * HIGHER than the baselined entry's severity. Such findings flow through
+ * to the report (and a warning is logged so the user knows the baseline
+ * didn't fully apply). Legacy baseline entries without a severity field
+ * are treated as INFO (the most permissive — they only suppress equally-
+ * weak incoming findings).
+ *
+ * Pure function; no I/O.
+ */
 export declare function applyBaseline(findings: Finding[], baseline: Baseline | undefined): BaselineFilterResult;
 /** Build a baseline document containing every supplied finding. */
 export declare function baselineFromFindings(findings: Finding[], reason?: string): Baseline;

@@ -4,7 +4,8 @@ import { dirname } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { z } from 'zod';
 import { findingFingerprint } from './identity.js';
-import type { Finding } from './schema.js';
+import { Severity, SEVERITY_ORDER, type Finding } from './schema.js';
+import { log } from '../util/logger.js';
 
 /**
  * Default file name for a baseline. `secure-review review` and
@@ -21,7 +22,17 @@ export const BaselineEntrySchema = z.object({
   lineStart: z.number().int().optional(),
   title: z.string().optional(),
   cwe: z.string().optional(),
-  severity: z.string().optional(),
+  /**
+   * Severity at the time the finding was baselined. Used by `applyBaseline`
+   * (Bug 2 fix, PR #3 audit) to refuse suppressing an INCOMING finding whose
+   * severity is HIGHER than the baselined one — a stale LOW baseline must
+   * not silently hide a later CRITICAL in the same bucket.
+   *
+   * Stored as the loose `Severity` enum string for JSON portability;
+   * `applyBaseline` re-validates and falls back to `INFO` if the field is
+   * absent (legacy baselines pre-Bug-2).
+   */
+  severity: Severity.optional(),
   /** Optional rationale: why this finding is accepted (TP-but-tolerated, FP, etc.). */
   reason: z.string().optional(),
   /** ISO-8601 timestamp of when this entry was added. */
@@ -44,17 +55,61 @@ export interface BaselineFilterResult {
   suppressed: Finding[];
 }
 
-/** Apply a baseline to a list of findings. Pure function; no I/O. */
+/**
+ * Apply a baseline to a list of findings.
+ *
+ * Bug 2 (PR #3 audit): severity-aware suppression. Pre-fix the matcher was
+ * a `Set<fingerprint>` — any incoming finding whose fingerprint matched a
+ * baseline entry was silently suppressed regardless of severity. Live
+ * smoke test reproduced 3 CRITICALs being hidden by a single stale LOW
+ * baseline entry in the same bucket.
+ *
+ * Post-fix: refuse to suppress when the incoming finding's severity is
+ * HIGHER than the baselined entry's severity. Such findings flow through
+ * to the report (and a warning is logged so the user knows the baseline
+ * didn't fully apply). Legacy baseline entries without a severity field
+ * are treated as INFO (the most permissive — they only suppress equally-
+ * weak incoming findings).
+ *
+ * Pure function; no I/O.
+ */
 export function applyBaseline(findings: Finding[], baseline: Baseline | undefined): BaselineFilterResult {
   if (!baseline || baseline.entries.length === 0) {
     return { kept: findings, suppressed: [] };
   }
-  const accepted = new Set(baseline.entries.map((e) => e.fingerprint));
+  // Map fingerprint → highest baselined severity for that fingerprint.
+  // Multiple entries with the same fingerprint can occur if the baseline
+  // file was hand-edited; use the highest so legitimate CRITICAL acceptances
+  // aren't silently downgraded by a duplicate INFO entry.
+  const acceptedSeverity = new Map<string, Finding['severity']>();
+  for (const e of baseline.entries) {
+    const sev = (e.severity ?? 'INFO') as Finding['severity'];
+    const prev = acceptedSeverity.get(e.fingerprint);
+    if (prev === undefined || SEVERITY_ORDER[sev] > SEVERITY_ORDER[prev]) {
+      acceptedSeverity.set(e.fingerprint, sev);
+    }
+  }
   const kept: Finding[] = [];
   const suppressed: Finding[] = [];
+  let escalated = 0;
   for (const f of findings) {
-    if (accepted.has(findingFingerprint(f))) suppressed.push(f);
-    else kept.push(f);
+    const baselineSev = acceptedSeverity.get(findingFingerprint(f));
+    if (baselineSev === undefined) {
+      kept.push(f);
+      continue;
+    }
+    // Bug 2: refuse to suppress when incoming severity is HIGHER than baselined.
+    if (SEVERITY_ORDER[f.severity] > SEVERITY_ORDER[baselineSev]) {
+      kept.push(f);
+      escalated += 1;
+      continue;
+    }
+    suppressed.push(f);
+  }
+  if (escalated > 0) {
+    log.warn(
+      `Baseline: ${escalated} finding${escalated === 1 ? '' : 's'} kept despite a baseline match — incoming severity is higher than the baselined severity (Bug 2 safety guard). Update the baseline if these are intentional acceptances.`,
+    );
   }
   return { kept, suppressed };
 }

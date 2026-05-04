@@ -76,6 +76,61 @@ describe('applyBaseline', () => {
     expect(applyBaseline(findings, undefined).kept).toHaveLength(2);
     expect(applyBaseline(findings, baselineFromFindings([])).kept).toHaveLength(2);
   });
+
+  it('Bug 2 (PR #3 audit): refuses to suppress when incoming severity is HIGHER than baselined', () => {
+    // Pre-fix: a stale LOW baseline silently hid 3 CRITICALs in the same
+    // bucket. Post-fix: incoming severity > baselined severity → kept.
+    const baseline = baselineFromFindings([
+      mk({ file: 'src/a.ts', lineStart: 10, severity: 'LOW' }),
+    ]);
+    const findings = [
+      mk({ file: 'src/a.ts', lineStart: 11, severity: 'CRITICAL' }),  // higher → kept
+      mk({ file: 'src/a.ts', lineStart: 12, severity: 'LOW' }),       // equal  → suppressed
+      mk({ file: 'src/a.ts', lineStart: 13, severity: 'INFO' }),      // lower  → suppressed
+    ];
+    const { kept, suppressed } = applyBaseline(findings, baseline);
+    expect(kept).toHaveLength(1);
+    expect(kept[0]!.severity).toBe('CRITICAL');
+    expect(suppressed).toHaveLength(2);
+  });
+
+  it('Bug 2: dedupes baseline entries with the same fingerprint by taking the HIGHEST severity (defends against hand-edited baselines)', () => {
+    // Same fingerprint listed twice — once as INFO, once as HIGH. The
+    // matcher must take HIGH so an incoming HIGH gets suppressed instead
+    // of escalated.
+    const baseline: ReturnType<typeof baselineFromFindings> = {
+      schemaVersion: 1,
+      createdAt: 'x',
+      updatedAt: 'x',
+      entries: [
+        { fingerprint: 'src/a.ts::1::thing', severity: 'INFO' },
+        { fingerprint: 'src/a.ts::1::thing', severity: 'HIGH' },
+      ],
+    };
+    const incoming = mk({ file: 'src/a.ts', lineStart: 10, severity: 'HIGH' });
+    const { kept, suppressed } = applyBaseline([incoming], baseline);
+    expect(kept).toHaveLength(0);
+    expect(suppressed).toHaveLength(1);
+  });
+
+  it('Bug 2: legacy baseline entries without a severity field are treated as INFO (most permissive)', () => {
+    // Old baselines (pre-Bug-2) won't have severity. They must NOT silently
+    // hide a later HIGH/CRITICAL — treat as INFO so anything stronger flows
+    // through.
+    const baseline: ReturnType<typeof baselineFromFindings> = {
+      schemaVersion: 1,
+      createdAt: 'x',
+      updatedAt: 'x',
+      entries: [
+        { fingerprint: 'src/a.ts::1::thing' /* no severity */ },
+      ],
+    };
+    const high = mk({ file: 'src/a.ts', lineStart: 10, severity: 'HIGH' });
+    const info = mk({ file: 'src/a.ts', lineStart: 12, severity: 'INFO' });
+    const { kept, suppressed } = applyBaseline([high, info], baseline);
+    expect(kept.map((f) => f.severity)).toEqual(['HIGH']);
+    expect(suppressed.map((f) => f.severity)).toEqual(['INFO']);
+  });
 });
 
 describe('mergeBaseline', () => {

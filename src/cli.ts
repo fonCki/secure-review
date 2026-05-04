@@ -137,7 +137,13 @@ async function resolveBaseline(
   const auto = resolve(scanRoot, DEFAULT_BASELINE_FILENAME);
   const baseline = await loadBaseline(auto);
   if (baseline) {
-    log.info(`Baseline: loaded ${baseline.entries.length} accepted finding(s) from ${auto}`);
+    // Bug 2 (PR #3 audit): auto-load is silent by default — escalate to
+    // `warn` so users notice that headline finding counts are being
+    // affected by a stale on-disk baseline. Pass `--baseline none` to
+    // disable auto-load explicitly.
+    log.warn(
+      `Baseline: auto-loaded ${baseline.entries.length} accepted finding(s) from ${auto}. Pass --baseline none to disable.`,
+    );
     return { baseline, path: auto };
   }
   return { baseline: undefined };
