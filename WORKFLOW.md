@@ -77,7 +77,7 @@ The simplest mode. No LLM calls, no API keys required.
 ```
 1. Load `.secure-review.yml` and pass the requested path to `runAllSast`
 2. Run each enabled SAST tool sequentially (in src/sast/index.ts order):
-     - semgrep (auto config)
+     - semgrep (rulesets: `p/javascript`, `p/typescript`, `p/nodejs`, `p/owasp-top-ten` — explicit registry packs, not `--config auto`)
      - eslint  (via `npx --no-install eslint --format json <path>`)
      - npm audit (with the requested path as cwd)
 3. Normalize each tool's output to the unified Finding schema
@@ -161,7 +161,7 @@ currentFindings = initialFindings    # ← becomes the writer's iter-1 to-do lis
 
 > SAST runs sequentially before the parallel reader fan-out. Readers always run in parallel in `fix` mode (no opt-out), so the `config.review.parallel` flag has no effect here.
 
-> Gates are also evaluated **once after the initial scan** (before entering the loop) and **once after final verification** — not only inside the iteration loop. So a cost/wall-time/critical-introduced violation can short-circuit fix mode at any of three points: post-initial-scan, mid-loop, or post-final-verification.
+> Gates are also evaluated **once after the initial scan** (before entering the loop) and **once after final verification** — not only inside the iteration loop. The initial-scan and final-verification gate passes only check the cost/wall-time bounds (there's no "before" findings set to diff against, so the severity-regression gates `block_on_new_critical` / `block_on_new_high` only fire from iteration 1 onward — see `src/gates/evaluate.ts:32`). So cost/wall-time can short-circuit fix mode at any of three points; severity-regression at iter 1+ only.
 
 ### Phase 2: Iteration loop
 
@@ -325,7 +325,11 @@ These cut across `review` and `fix` rather than belonging to a single mode. Each
 Inside a `fix` run, the same underlying bug must keep the same identity even when the verifier rephrases it (different line by ±a few, different title, different CWE). Without this, the per-iteration `introduced` count is artificially inflated by relabeling.
 
 ```
-fingerprint(f) = `${file}::${floor(lineStart / 10)}`           # excludes CWE + title
+fingerprint(f) = `${file}::${floor(lineStart / 10)}::${cwe || titlePrefix24}`
+# v2-file-bucket-cwe — same CWE keeps the same identity even when the
+# verifier rephrases the title; relabeling with a *different* CWE produces
+# a NEW fingerprint (so a writer that "fixes" by changing CWE labels
+# does not silently inherit the old S-NNN).
 registry assigns S-NNN the first time a fingerprint is seen and
 re-uses it for every subsequent sighting in the same session.
 ```

@@ -169,7 +169,7 @@ gates:
 # secure-review-runtime (https://github.com/sstaempfli/secure-review-runtime), not in core CLI modes.
 ```
 
-Every reviewer is a `{provider, model, skill}` triple. Skills are Markdown files defining the reviewer's role (web-sec pen-tester, OWASP auditor, supply-chain specialist, etc.). Write your own by copying `skills/*.md`.
+Every reviewer is a `{name, provider, model, skill}` quad — `name` is required (it appears in `reportedBy` and PR comments to identify which reviewer flagged a finding). Skills are Markdown files defining the reviewer's role (web-sec pen-tester, OWASP auditor, supply-chain specialist, etc.). Write your own by copying `skills/*.md`.
 
 ## Environment
 
@@ -305,7 +305,7 @@ Runs `review` mode on the full checkout, then filters the aggregated findings ag
 - **summary** — finding in a changed file but on an unchanged line → mentioned in the review summary
 - **dropped** — finding in an untouched file → not posted
 
-Fork PRs are skipped by default (forks don't have secret access). Fails the check if any CRITICAL finding lands on a diff line.
+Fork PRs are skipped by default (forks don't have secret access). Fails the check (exit 2) if `block_on_new_critical` is true and any CRITICAL finding lands on a **changed file** (not only commentable diff lines), or if `block_on_new_high` triggers on a HIGH, or if cost cap is exceeded — see `evaluatePrGates` in `src/reporters/github-pr.ts`.
 
 ## Architecture
 
