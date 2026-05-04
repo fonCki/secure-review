@@ -1,6 +1,6 @@
 {
   "name": "secure-review",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Multi-model security review for AI-generated code. Runs OpenAI, Anthropic, and Google reviewers in parallel and posts findings as PR comments.",
   "keywords": [
     "security",

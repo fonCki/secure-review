@@ -2,6 +2,19 @@
 
 All notable changes to `secure-review`. Newest first.
 
+## [1.0.1] — 2026-05-04
+
+Docs-only patch release. No code changes; npm tarball updated so the public README + WORKFLOW match v1.0.0 code.
+
+### Fixed (Codex blind doc audit, post-1.0.0)
+
+- **WORKFLOW.md** — fingerprint pseudocode updated to the actual v2 algorithm `${file}::${floor(lineStart/10)}::${cwe || titlePrefix24}` (pre-fix it still showed the v1-file-bucket form which contradicted both `src/findings/identity.ts` and the Bug 1 fix shipped in 1.0.0).
+- **README.md** — reviewer config example corrected from `{provider, model, skill}` to `{name, provider, model, skill}` (the `name` field is required by `ReviewerRef` in `src/config/schema.ts:20`; appears in `reportedBy` and PR comments).
+- **WORKFLOW.md** — gate-scope claim clarified: cost / wall-time bounds fire at any of three points (post-initial-scan, mid-loop, post-final-verification); `block_on_new_critical` / `block_on_new_high` only fire from iteration 1 onward (`src/gates/evaluate.ts:32`).
+- **README.md** — PR failure description corrected: the gate fires on any CRITICAL in a **changed file** (not only commentable diff lines). Source: `evaluatePrGates` in `src/reporters/github-pr.ts:169` uses `severityCountsTouched.CRITICAL`.
+- **WORKFLOW.md** — Semgrep configuration updated from "auto config" to the actual rulesets used (`p/javascript`, `p/typescript`, `p/nodejs`, `p/owasp-top-ten`). Source: `src/sast/semgrep.ts:18`.
+- **WORKFLOW.md** — removed the `attack` / `attack-ai` row from the "Mapping to experiment conditions" table (the table is for THIS package's modes; runtime modes ship separately in `secure-review-runtime`, and the prose note below the table already conveys that).
+
 ## [1.0.0] — 2026-05-04
 
 Breaking release: **runtime Layer 4 is split out** into the companion npm package **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** (`attack`, `attack-ai`, ZAP/Nuclei, browser-login hooks, and runtime PR posting). This repo stays **static-only** (`scan`, `review`, `fix`, `pr`, benchmarks, etc.).
