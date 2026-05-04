@@ -631,7 +631,13 @@ async function runFilteredSast(
   only: Set<string> | undefined,
 ): Promise<SastSummary> {
   const summary = await runAllSast(root, sastConfig);
-  if (only && only.size > 0) return filterSastByPaths(summary, only);
+  // Bug A1 (round-2 blind audit by Codex): when `only` is provided AND empty,
+  // the user explicitly scoped to nothing. Pre-fix the `only.size > 0` guard
+  // here short-circuited and returned the full-tree summary, contradicting
+  // both `readSourceTree`'s and `filterSastByPaths`'s now-strict empty-set
+  // semantics. Fix: if `only` is provided, route through filterSastByPaths
+  // unconditionally — its empty-set branch already returns drop-all.
+  if (only) return filterSastByPaths(summary, only);
   return summary;
 }
 

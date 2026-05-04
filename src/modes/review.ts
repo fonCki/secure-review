@@ -61,7 +61,11 @@ export async function runReviewMode(input: ReviewModeInput): Promise<ReviewModeO
   // FULL scan-root regardless of `--since`, so without this filter SAST
   // findings from files outside the incremental subset would leak into the
   // aggregated set. README claims `--since` restricts the whole pipeline.
-  if (only && only.size > 0) {
+  // Bug A1 (round-2 blind audit by Codex): always route through
+  // filterSastByPaths when `only` is provided — its empty-set branch
+  // correctly returns drop-all, so an empty `--since` ref scopes SAST to
+  // nothing instead of leaking the full tree.
+  if (only) {
     sast = filterSastByPaths(sast, only);
   }
 

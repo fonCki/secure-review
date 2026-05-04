@@ -7,12 +7,15 @@ import { SEVERITY_ORDER, type Finding, type SeverityBreakdown } from './schema.j
  * Two findings are treated as the same issue if they share:
  *   - the same file
  *   - an overlapping line window (we bucket by lineStart//10)
+ *   - the same CWE (or, when CWE is missing, the same 24-char title prefix)
  *
- * NOTE: We intentionally do NOT include CWE in the deduplication key because
- * different models/tools often assign different CWEs to the same underlying bug,
- * which would prevent cross-model merges and depress agreement.
+ * v2 (Bug 1, PR #3 audit): CWE is now part of the key. Pre-fix it was
+ * deliberately excluded, but live smoke tests showed two distinct CWEs in
+ * the same 10-line bucket silently merged with mismatched title vs
+ * description (kept first finding's title+CWE, overwrote description from
+ * second). See `findingFingerprint` in identity.ts for the full algorithm.
  *
- * On merge:
+ * On merge (when fingerprints match):
  *   - keep the highest severity
  *   - union `reportedBy`
  *   - prefer the most detailed description / remediation

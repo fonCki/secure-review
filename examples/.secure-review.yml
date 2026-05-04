@@ -50,14 +50,10 @@ gates:
   max_cost_usd: 20
   max_wall_time_minutes: 15
 
-dynamic:
-  max_requests: 50
-  rate_limit_per_second: 2
-  max_crawl_pages: 20
-  attacker:
-    provider: anthropic
-    model: claude-sonnet-4-6
-    skill: ../skills/authorized-attack-simulator.md
+# Note: this `secure-review` package is static-only as of v1.0.0. For runtime
+# probing (Layer-4 attack/attack-ai/ZAP/Nuclei + the `dynamic.*` config
+# block), use the sibling package `secure-review-runtime`
+# (https://github.com/sstaempfli/secure-review-runtime).
 
 output:
   report: ./reports/report-{timestamp}.md

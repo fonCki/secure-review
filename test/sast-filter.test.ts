@@ -93,6 +93,30 @@ describe('filterSastByPaths — Bug 9', () => {
     expect(result.semgrep.count).toBe(0);
   });
 
+  it('Bug A1 (round-2 blind audit): empty `only` set drops everything (the call sites in review.ts and fix.ts must route through this helper unconditionally when `only` is provided)', () => {
+    // This test pins the contract that `filterSastByPaths(summary, new Set())`
+    // returns drop-all, NOT the unfiltered summary. The bug fixed in commit
+    // 25f3705 closed it for `readSourceTree` and this helper, but the
+    // `runFilteredSast` wrapper in fix.ts and the inline check in review.ts
+    // still had `if (only && only.size > 0)` short-circuits that bypassed
+    // this helper for the empty-set case — letting full-tree SAST findings
+    // through. Both call sites now use `if (only)` (not `.size > 0`) so
+    // this test's contract IS the integration contract.
+    const summary: SastSummary = {
+      findings: [
+        mkFinding('src/a.ts', ['semgrep'], 'CRITICAL'),
+        mkFinding('src/b.ts', ['eslint'], 'HIGH'),
+      ],
+      semgrep: { ran: true, count: 1 },
+      eslint: { ran: true, count: 1 },
+      npmAudit: { ran: false, count: 0 },
+    };
+    const result = filterSastByPaths(summary, new Set());
+    expect(result.findings).toHaveLength(0);
+    expect(result.semgrep.count).toBe(0);
+    expect(result.eslint.count).toBe(0);
+  });
+
   it('drops everything if no findings match `only`', () => {
     const summary: SastSummary = {
       findings: [mkFinding('src/a.ts', ['semgrep'])],
