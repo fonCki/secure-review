@@ -2,9 +2,10 @@ import { getAdapter } from '../adapters/factory.js';
 import type { Env, SecureReviewConfig } from '../config/schema.js';
 import { loadSkill, resolveSkillPath } from '../config/load.js';
 import { aggregate, severityBreakdown } from '../findings/aggregate.js';
+import { applyBaseline, type Baseline } from '../findings/baseline.js';
 import type { Finding, SeverityBreakdown } from '../findings/schema.js';
 import { runReviewer, type ReviewerRunOutput } from '../roles/reviewer.js';
-import { runAllSast, type SastSummary } from '../sast/index.js';
+import { filterSastByPaths, runAllSast, type SastSummary } from '../sast/index.js';
 import { normalizeFindingPaths, readSourceTree } from '../util/files.js';
 import { log } from '../util/logger.js';
 import { summarizeReviewHealth, type ReviewHealthStatus } from '../util/review-health.js';
@@ -15,6 +16,10 @@ export interface ReviewModeInput {
   config: SecureReviewConfig;
   configDir: string;
   env: Env;
+  /** If set, only files whose relPath is in this set are reviewed (incremental mode). */
+  only?: Set<string>;
+  /** If set, findings whose fingerprint matches a baseline entry are suppressed. */
+  baseline?: Baseline;
 }
 
 export interface ReviewModeOutput {
@@ -27,17 +32,19 @@ export interface ReviewModeOutput {
   succeededReviewers: string[];
   totalCostUSD: number;
   totalDurationMs: number;
+  /** Findings suppressed by the baseline (already excluded from `findings`). */
+  baselineSuppressed: Finding[];
 }
 
 export async function runReviewMode(input: ReviewModeInput): Promise<ReviewModeOutput> {
-  const { root, config, configDir, env } = input;
+  const { root, config, configDir, env, only, baseline } = input;
   const started = Date.now();
 
-  log.header(`Review mode — ${root}`);
+  log.header(`Review mode — ${root}${only ? ` (incremental: ${only.size} file${only.size === 1 ? '' : 's'})` : ''}`);
   log.info(`Reviewers: ${config.reviewers.map((r) => r.name).join(', ')}`);
 
   // 1. Read source tree
-  const files = await readSourceTree(root);
+  const files = await readSourceTree(root, 200_000, only);
   log.info(`Loaded ${files.length} source files`);
 
   // 2. Run SAST (treat its findings as additional "reviewers")
@@ -49,6 +56,17 @@ export async function runReviewMode(input: ReviewModeInput): Promise<ReviewModeO
     logSastSummary(sast);
   } else {
     sast = await runAllSast(root, config.sast);
+  }
+  // Bug 9 (PR #3 audit): SAST tools (semgrep / eslint / npm-audit) scan the
+  // FULL scan-root regardless of `--since`, so without this filter SAST
+  // findings from files outside the incremental subset would leak into the
+  // aggregated set. README claims `--since` restricts the whole pipeline.
+  // Bug A1 (round-2 blind audit by Codex): always route through
+  // filterSastByPaths when `only` is provided — its empty-set branch
+  // correctly returns drop-all, so an empty `--since` ref scopes SAST to
+  // nothing instead of leaking the full tree.
+  if (only) {
+    sast = filterSastByPaths(sast, only);
   }
 
   // 3. Build context for reviewers
@@ -67,11 +85,18 @@ export async function runReviewMode(input: ReviewModeInput): Promise<ReviewModeO
   allFindings.push(...sast.findings);
   const aggregated = aggregate(allFindings);
 
+  // 6. Apply baseline (FP suppression). Suppressed findings are kept on the
+  //    output for transparency but excluded from the headline `findings` set.
+  const { kept, suppressed } = applyBaseline(aggregated, baseline);
+  if (suppressed.length > 0) {
+    log.info(`Baseline: ${suppressed.length} finding${suppressed.length === 1 ? '' : 's'} suppressed`);
+  }
+
   const totalCost = reviewerRuns.reduce((s, r) => s + r.usage.costUSD, 0);
 
   return {
-    findings: aggregated,
-    breakdown: severityBreakdown(aggregated),
+    findings: kept,
+    breakdown: severityBreakdown(kept),
     sast,
     perReviewer: reviewerRuns,
     reviewStatus: health.reviewStatus,
@@ -79,6 +104,7 @@ export async function runReviewMode(input: ReviewModeInput): Promise<ReviewModeO
     succeededReviewers: health.succeededReviewers,
     totalCostUSD: totalCost,
     totalDurationMs: Date.now() - started,
+    baselineSuppressed: suppressed,
   };
 }
 

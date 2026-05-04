@@ -45,3 +45,9 @@ gates:
   block_on_new_critical: true
   max_cost_usd: 5
   max_wall_time_minutes: 15
+
+# Note: this `secure-review` package is static-only as of v1.0.0. The runtime
+# probing surface (Layer-4 attack/attack-ai/ZAP/Nuclei + the corresponding
+# `dynamic.*` config block) lives in the sibling package
+# `secure-review-runtime` (https://github.com/sstaempfli/secure-review-runtime).
+# If you need runtime checks, install that package and configure them there.

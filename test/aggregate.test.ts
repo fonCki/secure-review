@@ -39,10 +39,25 @@ describe('aggregate', () => {
     expect(aggregate([f1, f2])).toHaveLength(2);
   });
 
-  it('keeps findings separate when CWE differs', () => {
-    const f1 = mkFinding({ cwe: 'CWE-306' });
-    const f2 = mkFinding({ cwe: 'CWE-79' });
-    expect(aggregate([f1, f2])).toHaveLength(2);
+  it('Bug 1 (PR #3 audit): keeps findings separate when CWE differs at the same location', () => {
+    // Pre-fix (v1-file-bucket): identity was {file, lineBucket} only, so
+    // these two genuinely-distinct vulnerabilities silently merged with
+    // mismatched title vs description. Post-fix (v2-file-bucket-cwe): CWE
+    // is in the key → kept separate.
+    const sqli = mkFinding({ cwe: 'CWE-89', title: 'SQL injection', reportedBy: ['model-a'] });
+    const xss = mkFinding({ cwe: 'CWE-79', title: 'XSS', reportedBy: ['model-b'] });
+    const out = aggregate([sqli, xss]);
+    expect(out).toHaveLength(2);
+  });
+
+  it('two reviewers reporting the same finding (same CWE) at the same location merge with combined reportedBy', () => {
+    // Cross-model agreement: both models flag the same CWE at the same
+    // line — must merge so we get an "agreement" signal in confidence.
+    const f1 = mkFinding({ cwe: 'CWE-306', reportedBy: ['model-a'] });
+    const f2 = mkFinding({ cwe: 'CWE-306', reportedBy: ['model-b'] });
+    const out = aggregate([f1, f2]);
+    expect(out).toHaveLength(1);
+    expect(out[0].reportedBy.sort()).toEqual(['model-a', 'model-b']);
   });
 
   it('re-numbers IDs sequentially', () => {

@@ -2,6 +2,57 @@
 
 All notable changes to `secure-review`. Newest first.
 
+## [1.0.0] — 2026-05-04
+
+Breaking release: **runtime Layer 4 is split out** into the companion npm package **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** (`attack`, `attack-ai`, ZAP/Nuclei, browser-login hooks, and runtime PR posting). This repo stays **static-only** (`scan`, `review`, `fix`, `pr`, benchmarks, etc.).
+
+### Fixes (PR #3 audit campaign — 9 substantive bugs surfaced by triple-agent validation, 1 follow-up from blind round-2)
+
+- **Bug 1 — finding fingerprint includes CWE** (`v1-file-bucket` → `v2-file-bucket-cwe`). Two genuinely-distinct vulnerabilities in the same 10-line bucket no longer silently merge with mismatched title vs description. CWE-less findings fall back to a 24-char title prefix. Source: `src/findings/identity.ts`.
+- **Bug 2 — baseline suppression is severity-aware**. A stale `LOW` baseline can no longer hide a later `CRITICAL` in the same bucket. Auto-load now logs at `warn` level so users notice when a baseline silently affects their numbers (pass `--baseline none` to disable). New `severity` field on baseline entries; legacy entries without it are treated as `INFO` (most permissive). Source: `src/findings/baseline.ts`.
+- **Bug 3 — `--since` rollback no longer deletes pre-existing files**. Pre-fix, the snapshot covered only `beforeFiles` (the `--since` subset), but `allowedFiles` could include paths from findings outside the subset. New `augmentSnapshot` reads on-disk content for the full `allowedFiles` set so writer-touched pre-existing files restore correctly; truly writer-created files still get cleaned up. Source: `src/modes/fix.ts`.
+- **Bug 4 — `--since` path-rooting works on subdirectory scans**. Pre-fix, `getGitChangedFiles` returned git-root-relative paths but `readSourceTree` filtered by scan-root-relative paths, so `secure-review review ./src --since main` silently reviewed zero files. Now resolves both ends through `realpath` (handles macOS `/var → /private/var`), uses `git -z` for paths with spaces / non-ASCII / quote-escaped names, and `walk()` normalizes backslashes for Windows. Untracked files now also count as "changed since `<ref>`". Source: `src/util/files.ts`.
+- **Bug 6 — divergence break runs AFTER gate evaluation**. Pre-fix the divergence detector exited the loop BEFORE `evaluateGates`, so a divergent iteration that introduced a new `CRITICAL` silently kept the writer's bad changes. Now records a flag, lets gates fire (and rollback) first, then breaks. Source: `src/modes/fix.ts`.
+- **Bug 7 — evidence JSON now includes `tool_version` and `fingerprint_algorithm`** for cross-experiment reproducibility. Old runs (different algorithm) and new runs are distinguishable post-hoc. Source: `src/reporters/json.ts`, `src/findings/schema.ts`, `src/findings/identity.ts`.
+- **Bug 8 — pre-run cost estimate respects `--since`**. Both `previewAndConfirmCost` (inline preview) and the standalone `estimate` subcommand now scope to the incremental file subset. The `--since` set is computed once per CLI invocation and threaded through both the estimate and the actual run (no double `git diff` shell-out, no TOCTOU between estimate and execution).
+- **Bug 8 follow-up — empty `only` set means "scope to nothing"**. Both `readSourceTree` and `filterSastByPaths` short-circuit with empty results when `only` is provided AND empty (e.g., `--since HEAD` on a clean tree). Pre-fix this silently fell through to a full-tree scan.
+- **Bug 9 — `--since` restricts SAST findings, not just LLM reader inputs**. New `filterSastByPaths` helper post-filters `runAllSast` output by the incremental set; new `runFilteredSast` wrapper deduplicates the call sites in `fix.ts`. Source: `src/sast/index.ts`.
+- **Round-2 blind audit — `runFilteredSast` short-circuit fix**. `runFilteredSast` and `review.ts:64` previously had `if (only && only.size > 0)` checks that bypassed the strict empty-set helper; both now use `if (only)` so empty `only` consistently means "no-op". Source: `src/modes/fix.ts`, `src/modes/review.ts`.
+
+### Tests
+
+- Test count: **194 → 224** (+30 regression tests across 3 new test files):
+  - `test/files-since.test.ts` — 8 tests for `--since` path resolution, paths-with-spaces, non-ASCII, untracked files, error cases, empty-set semantics
+  - `test/sast-filter.test.ts` — 6 tests for SAST post-filter incl. the round-2 empty-set guard
+  - `test/bug3-rollback.test.ts` — 4 tests for the snapshot-augment / rollback safety contract
+- Existing test files updated for the v2 fingerprint (`identity`, `aggregate`, `baseline`, `reporter`, `improvements`).
+- All 224 tests pass on `npm test`; `npm run typecheck` clean; `npm run build` + `npm run build:action` clean.
+
+### Cleanup
+
+- Removed orphan `dist-action/modes/attack*.d.ts` + `dist-action/pentest/*.d.ts` artifacts and the leftover `skills/authorized-attack-simulator.md` from the carve-out (the runtime repo has its own copy).
+- Stripped `dynamic.attacker:` blocks from dogfood `.secure-review.yml` and `examples/.secure-review.yml`; replaced with a 4-line pointer to `secure-review-runtime`.
+- Stripped seminar-context comments ("Meeting 3", "Condition F experimental design") from the example config.
+- Moved 4 historical audit reports (`BUGHUNT_REPORT_*.md`, `TEST_GAPS_*.md`, `ROBUSTNESS_REPORT_*.md`, `CODEX_AUDIT_*.md`) from repo root into `docs/audits-archive/` and purged 10 stale `.tmp-attack-ai-*` tempdirs.
+- Removed ~150 lines of stale `attack` / `attack-ai` / `--attack-target-url` documentation from `WORKFLOW.md` (modes carved out in this release; sections were "retained as methodology reference until they are fully relocated"). WORKFLOW.md down 695 → 524 lines. README + WORKFLOW dedup-rule + stable-ID-key prose updated to reflect the v2 fingerprint.
+
+### Removed / breaking
+
+- CLI subcommands **`attack`** and **`attack-ai`**; all **`--pentest-*`**, **`--browser-login-script`**, and **`fix`** flags that only served **`attack-ai`** (`--attack-*`, `--attack-every-iter`, …).
+- GitHub Action inputs **`runtime-mode`**, **`target-url`**, **`pentest-scanners`**, **`browser-login-script`**, **`auth-headers-json`**, **`runtime-timeout-seconds`** — use **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**’s Action for those workflows.
+- Public exports **`runAttackMode`**, **`runAttackAiMode`**, attack types, and **`renderAttack*`** / **`renderAttack*Evidence`** from the main package.
+- Source under **`src/modes/attack*.ts`** and **`src/pentest/`** (moved to **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**).
+- **`fix` mode** no longer runs an **attack-ai** hook; the loop is **static-only** (snapshot/rollback and divergence detection unchanged).
+
+### Added (API for the runtime package)
+
+- Re-exports: **`readSourceTree`**, **`serializeCodeContext`**, **`writeFileSafe`**, **`FileContent`**, **`agreementCount`**, **`log`** / **`setQuiet`** / **`setVerbose`**, **`mergeAuthHeaders`**.
+- **`evaluateRuntimePrGate`** remains in core for shared gate logic.
+
+### Docs
+
+- README and WORKFLOW point to **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** for live targets and external scanners.
+
 ## [0.5.13] — 2026-04-29
 
 First external contribution. All three changes from PR #1 by [@sstaempfli](https://github.com/sstaempfli) (Shana Stampfli) — caught while she was using the tool on her own work.

@@ -1,3 +1,4 @@
+import { findingFingerprint } from './identity.js';
 import { SEVERITY_ORDER, type Finding, type SeverityBreakdown } from './schema.js';
 
 /**
@@ -6,9 +7,15 @@ import { SEVERITY_ORDER, type Finding, type SeverityBreakdown } from './schema.j
  * Two findings are treated as the same issue if they share:
  *   - the same file
  *   - an overlapping line window (we bucket by lineStart//10)
- *   - the same CWE (or both missing a CWE but same title prefix)
+ *   - the same CWE (or, when CWE is missing, the same 24-char title prefix)
  *
- * On merge:
+ * v2 (Bug 1, PR #3 audit): CWE is now part of the key. Pre-fix it was
+ * deliberately excluded, but live smoke tests showed two distinct CWEs in
+ * the same 10-line bucket silently merged with mismatched title vs
+ * description (kept first finding's title+CWE, overwrote description from
+ * second). See `findingFingerprint` in identity.ts for the full algorithm.
+ *
+ * On merge (when fingerprints match):
  *   - keep the highest severity
  *   - union `reportedBy`
  *   - prefer the most detailed description / remediation
@@ -40,9 +47,7 @@ export function aggregate(findings: Finding[]): Finding[] {
 }
 
 function bucketKey(f: Finding): string {
-  const bucket = Math.floor(f.lineStart / 10);
-  const cwe = f.cwe ?? f.title.slice(0, 24).toLowerCase();
-  return `${f.file}::${bucket}::${cwe}`;
+  return findingFingerprint(f);
 }
 
 function mergeFindings(a: Finding, b: Finding): Finding {
@@ -70,4 +75,9 @@ export function severityBreakdown(findings: Finding[]): SeverityBreakdown {
 
 export function countBySeverity(findings: Finding[], severity: Finding['severity']): number {
   return findings.filter((f) => f.severity === severity).length;
+}
+
+/** Number of distinct models that reported this finding. */
+export function agreementCount(finding: Finding): number {
+  return finding.reportedBy.length;
 }

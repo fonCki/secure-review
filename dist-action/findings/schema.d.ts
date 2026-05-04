@@ -5,6 +5,13 @@ export declare const SEVERITY_ORDER: Record<Severity, number>;
 /** A single vulnerability or concern reported by a reviewer. */
 export declare const FindingSchema: z.ZodObject<{
     id: z.ZodString;
+    /**
+     * Stable identity assigned by the session-wide `FindingRegistry` (e.g. "S-001").
+     * Same bug → same `stableId` across fix-loop iterations, even if the verifier
+     * reports it with a slightly different line or title. Optional: only populated
+     * by callers that have a registry (currently `runFixMode`).
+     */
+    stableId: z.ZodOptional<z.ZodString>;
     severity: z.ZodEnum<["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]>;
     cwe: z.ZodOptional<z.ZodString>;
     owaspCategory: z.ZodOptional<z.ZodString>;
@@ -17,27 +24,29 @@ export declare const FindingSchema: z.ZodObject<{
     reportedBy: z.ZodDefault<z.ZodArray<z.ZodString, "many">>;
     confidence: z.ZodDefault<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
-    id: string;
-    severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
     file: string;
     lineStart: number;
-    lineEnd: number;
     title: string;
+    severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+    id: string;
+    lineEnd: number;
     description: string;
     reportedBy: string[];
     confidence: number;
     cwe?: string | undefined;
+    stableId?: string | undefined;
     owaspCategory?: string | undefined;
     remediation?: string | undefined;
 }, {
-    id: string;
-    severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
     file: string;
     lineStart: number;
-    lineEnd: number;
     title: string;
+    severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+    id: string;
+    lineEnd: number;
     description: string;
     cwe?: string | undefined;
+    stableId?: string | undefined;
     owaspCategory?: string | undefined;
     remediation?: string | undefined;
     reportedBy?: string[] | undefined;
@@ -72,6 +81,18 @@ export type SeverityBreakdown = z.infer<typeof SeverityBreakdownSchema>;
 export declare const EvidenceJsonSchema: z.ZodObject<{
     task_id: z.ZodString;
     tool: z.ZodString;
+    /**
+     * Version of the secure-review package that produced this evidence.
+     * Read from package.json at runtime. Used for reproducibility — old vs new
+     * runs are distinguishable even when other fields are identical.
+     */
+    tool_version: z.ZodOptional<z.ZodString>;
+    /**
+     * Identifier for the finding-fingerprint / dedup algorithm in use when this
+     * evidence was produced. Different algorithm = different `total_findings_*`
+     * counts for the same input. See `findings/identity.ts` for the constant.
+     */
+    fingerprint_algorithm: z.ZodOptional<z.ZodString>;
     condition: z.ZodString;
     run: z.ZodNumber;
     timestamp: z.ZodString;
@@ -130,6 +151,61 @@ export declare const EvidenceJsonSchema: z.ZodObject<{
     total_cost_usd: z.ZodOptional<z.ZodNumber>;
     review_status: z.ZodString;
     failed_reviewers: z.ZodArray<z.ZodString, "many">;
+    /**
+     * Aggregated findings included for downstream tooling that needs the actual
+     * finding objects (e.g. `secure-review baseline reports/review-*.json`).
+     * Review mode writes the current review findings; fix mode writes final
+     * remaining findings after the loop.
+     */
+    findings: z.ZodOptional<z.ZodArray<z.ZodObject<{
+        id: z.ZodString;
+        /**
+         * Stable identity assigned by the session-wide `FindingRegistry` (e.g. "S-001").
+         * Same bug → same `stableId` across fix-loop iterations, even if the verifier
+         * reports it with a slightly different line or title. Optional: only populated
+         * by callers that have a registry (currently `runFixMode`).
+         */
+        stableId: z.ZodOptional<z.ZodString>;
+        severity: z.ZodEnum<["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]>;
+        cwe: z.ZodOptional<z.ZodString>;
+        owaspCategory: z.ZodOptional<z.ZodString>;
+        file: z.ZodString;
+        lineStart: z.ZodNumber;
+        lineEnd: z.ZodNumber;
+        title: z.ZodString;
+        description: z.ZodString;
+        remediation: z.ZodOptional<z.ZodString>;
+        reportedBy: z.ZodDefault<z.ZodArray<z.ZodString, "many">>;
+        confidence: z.ZodDefault<z.ZodNumber>;
+    }, "strip", z.ZodTypeAny, {
+        file: string;
+        lineStart: number;
+        title: string;
+        severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+        id: string;
+        lineEnd: number;
+        description: string;
+        reportedBy: string[];
+        confidence: number;
+        cwe?: string | undefined;
+        stableId?: string | undefined;
+        owaspCategory?: string | undefined;
+        remediation?: string | undefined;
+    }, {
+        file: string;
+        lineStart: number;
+        title: string;
+        severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+        id: string;
+        lineEnd: number;
+        description: string;
+        cwe?: string | undefined;
+        stableId?: string | undefined;
+        owaspCategory?: string | undefined;
+        remediation?: string | undefined;
+        reportedBy?: string[] | undefined;
+        confidence?: number | undefined;
+    }>, "many">>;
     reviewers: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
     iterations: z.ZodOptional<z.ZodNumber>;
     per_iteration: z.ZodOptional<z.ZodArray<z.ZodObject<{
@@ -214,6 +290,23 @@ export declare const EvidenceJsonSchema: z.ZodObject<{
     review_status: string;
     failed_reviewers: string[];
     reviewers?: string[] | undefined;
+    findings?: {
+        file: string;
+        lineStart: number;
+        title: string;
+        severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+        id: string;
+        lineEnd: number;
+        description: string;
+        reportedBy: string[];
+        confidence: number;
+        cwe?: string | undefined;
+        stableId?: string | undefined;
+        owaspCategory?: string | undefined;
+        remediation?: string | undefined;
+    }[] | undefined;
+    tool_version?: string | undefined;
+    fingerprint_algorithm?: string | undefined;
     source_condition?: string | undefined;
     review_report?: string | undefined;
     rereview_report?: string | undefined;
@@ -264,6 +357,23 @@ export declare const EvidenceJsonSchema: z.ZodObject<{
     review_status: string;
     failed_reviewers: string[];
     reviewers?: string[] | undefined;
+    findings?: {
+        file: string;
+        lineStart: number;
+        title: string;
+        severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+        id: string;
+        lineEnd: number;
+        description: string;
+        cwe?: string | undefined;
+        stableId?: string | undefined;
+        owaspCategory?: string | undefined;
+        remediation?: string | undefined;
+        reportedBy?: string[] | undefined;
+        confidence?: number | undefined;
+    }[] | undefined;
+    tool_version?: string | undefined;
+    fingerprint_algorithm?: string | undefined;
     source_condition?: string | undefined;
     semgrep_after_fix?: number | undefined;
     eslint_after_fix?: number | undefined;

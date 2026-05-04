@@ -30,6 +30,9 @@ export declare function generateConfig(a: InitAnswers, skillsBase?: string): str
  * The `npm ci` step is critical: without it, the action runs in a fresh
  * checkout where `node_modules/secure-review/skills/...` (the path written
  * into the user's .secure-review.yml) doesn't exist and skill loading fails.
+ *
+ * NOTE: Pin the action to a full commit SHA instead of a floating tag to
+ * prevent supply-chain attacks via tag mutation.
  */
 export declare function generateWorkflow(a: InitAnswers): string;
 export declare const SECURE_REVIEW_ENV_MARKER = "# === secure-review ===";

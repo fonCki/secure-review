@@ -13,7 +13,14 @@ export const SEVERITY_ORDER: Record<Severity, number> = {
 
 /** A single vulnerability or concern reported by a reviewer. */
 export const FindingSchema = z.object({
-  id: z.string(), // e.g. "F-01"
+  id: z.string(), // e.g. "F-01" — assigned per-aggregate-call, NOT stable across iterations
+  /**
+   * Stable identity assigned by the session-wide `FindingRegistry` (e.g. "S-001").
+   * Same bug → same `stableId` across fix-loop iterations, even if the verifier
+   * reports it with a slightly different line or title. Optional: only populated
+   * by callers that have a registry (currently `runFixMode`).
+   */
+  stableId: z.string().optional(),
   severity: Severity,
   cwe: z.string().optional(), // e.g. "CWE-306"
   owaspCategory: z.string().optional(), // e.g. "A01:2025"
@@ -45,6 +52,18 @@ export type SeverityBreakdown = z.infer<typeof SeverityBreakdownSchema>;
 export const EvidenceJsonSchema = z.object({
   task_id: z.string(),
   tool: z.string(), // e.g. "secure-review-cross-model"
+  /**
+   * Version of the secure-review package that produced this evidence.
+   * Read from package.json at runtime. Used for reproducibility — old vs new
+   * runs are distinguishable even when other fields are identical.
+   */
+  tool_version: z.string().optional(),
+  /**
+   * Identifier for the finding-fingerprint / dedup algorithm in use when this
+   * evidence was produced. Different algorithm = different `total_findings_*`
+   * counts for the same input. See `findings/identity.ts` for the constant.
+   */
+  fingerprint_algorithm: z.string().optional(),
   condition: z.string(), // e.g. "F"
   run: z.number().int(),
   timestamp: z.string(), // ISO-8601
@@ -67,6 +86,13 @@ export const EvidenceJsonSchema = z.object({
   total_cost_usd: z.number().optional(),
   review_status: z.string(),
   failed_reviewers: z.array(z.string()),
+  /**
+   * Aggregated findings included for downstream tooling that needs the actual
+   * finding objects (e.g. `secure-review baseline reports/review-*.json`).
+   * Review mode writes the current review findings; fix mode writes final
+   * remaining findings after the loop.
+   */
+  findings: z.array(FindingSchema).optional(),
   // Extended fields for multi-reviewer runs
   reviewers: z.array(z.string()).optional(),
   iterations: z.number().int().optional(),
