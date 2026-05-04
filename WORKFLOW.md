@@ -17,7 +17,7 @@ How `secure-review` actually executes each mode. Pseudo-code matches the source 
 | **F1 — SAST is nearly blind on AI-generated code.** Semgrep found 0 code-level vulnerabilities in 23 of 24 baseline runs (547 rules across JS/TS/Node.js/OWASP). ESLint Security was mostly false positives. | SAST is treated as **prior context** for AI readers, not as the driver. `inject_into_reviewer_context: true` tells readers *"here's what static rules saw — focus on what they miss."* |
 | **F2 — Naive scan→fix→scan loops do not converge.** In 4 of 6 Claude Code Condition C runs, the third iteration had *more* findings than the second. LOC grew 33–86%. | `fix` mode requires **N consecutive clean iterations** by *different* readers (`consecutiveCleanIters >= N`), gates on `block_on_new_critical`, and bounds work via `max_iterations`, `max_cost_usd`, and `max_wall_time_minutes`. Convergence is enforced, not assumed. |
 | **F3 — Single-model review-then-fix has a low resolution rate.** Independent AI review found 24–43 real issues per run, but resolution after the same agent's fix was 0–54%, occasionally negative. | **Cross-model rotating verifier** + **final verification with `all_reviewers`**. A single model "satisfying itself" is exactly the failure mode F3 measured. |
-| **The research question** explicitly cites *"without overwhelming developers with false positives."* | Aggregation is FP-control machinery: 10-line bucketing per `{file, line-bucket}` so cross-model relabelings of the same bug merge instead of double-counting, `confidence = min(1, \|reportedBy\| / 3)` so single-source noise is visibly downweighted, and an optional baseline file (`.secure-review-baseline.json`) lets users mark known-acceptable findings so they stop appearing in subsequent runs. See [§ False positives](#false-positives). |
+| **The research question** explicitly cites *"without overwhelming developers with false positives."* | Aggregation is FP-control machinery: 10-line bucketing per `{file, line-bucket, cwe-or-title-prefix}` so cross-model relabelings of the same CWE merge instead of double-counting, `confidence = min(1, \|reportedBy\| / 3)` so single-source noise is visibly downweighted, and an optional baseline file (`.secure-review-baseline.json`) lets users mark known-acceptable findings (severity-aware: a stale `LOW` baseline can no longer hide a later `CRITICAL` in the same bucket). See [§ False positives](#false-positives). |
 
 The rest of this document describes *what* the tool does. The two cross-cutting concerns this design exists to address — false-positive suppression and convergence — get dedicated sections at the end.
 
@@ -94,7 +94,7 @@ Use it when you want a fast, free, AI-free triage.
 
 ## `review` mode — multi-model parallel one-shot
 
-SAST runs first, then every reader scans the same code. Findings are merged by `{file, line-bucket}` — overlapping findings at the same location merge regardless of CWE or title (different models routinely assign different CWEs to the same underlying bug, so including either field would inflate apparent disagreement). Confidence per finding is `min(1, |reportedBy| / 3)` so a finding flagged by 2 of 3 reporters is high-confidence.
+SAST runs first, then every reader scans the same code. Findings are merged by `{file, line-bucket, cwe-or-title-prefix}` — overlapping findings at the same location merge ONLY when they share a CWE (or, when CWE is missing, a 24-char title prefix). Two genuinely-distinct vulnerabilities in the same 10-line bucket of the same file (e.g., a SQL injection at line 7 and a command injection at line 13) stay separate. Cross-model agreement on the same CWE still merges; confidence per finding is `min(1, |reportedBy| / 3)` so a finding flagged by 2 of 3 reporters is high-confidence.
 
 ![review mode: readSourceTree and runAllSast feed reviewer calls, aggregate, and review reports](docs/images/review-mode.png)
 
@@ -114,7 +114,7 @@ SAST runs first, then every reader scans the same code. Findings are merged by `
                          reader_B.findings,
                          reader_C.findings,
                          SAST.findings)
-     deduped     = group by {file, line-bucket}        # CWE/title NOT in the key
+     deduped     = group by {file, line-bucket, cwe || titlePrefix24}  # v2-file-bucket-cwe
                    merge overlaps; reportedBy = union of names
                    confidence = min(1, |reportedBy| / 3)
 5. Apply baseline (if `.secure-review-baseline.json` is present or `--baseline` set):
@@ -125,7 +125,7 @@ SAST runs first, then every reader scans the same code. Findings are merged by `
 ```
 </details>
 
-**Output**: `reports/review-<timestamp>.{md,json}`. No file mutations.
+**Output**: `reports/review-<timestamp>.{md,html,json}`. No file mutations.
 
 **When to use**: any time you want a security report on a codebase without changing it. Cheapest mode that uses LLMs.
 
@@ -283,7 +283,7 @@ Together these prevent the failure mode that motivated the 0.5.0 redesign: a sin
 
 ## `pr` mode — GitHub Action entrypoint
 
-Branches on **`INPUT_MODE`** / **`INPUT_RUNTIME_MODE`** (default **`review`**).
+Branches on **`INPUT_MODE`** (default **`review`**). The legacy `INPUT_RUNTIME_MODE` input was removed in v1.0.0 along with the runtime probing surface — see [`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime) for the runtime equivalent.
 
 ### `review` branch (default)
 
@@ -341,6 +341,8 @@ A `.secure-review-baseline.json` file records fingerprints of findings the user 
 - after each iteration's verifier audit (so suppressed findings don't reappear in the diff);
 - before the headline `findings` array is written to the report (suppressed findings are still kept on the output object for transparency, and counted in logs).
 
+**Severity-aware suppression (v1.0.0).** A baseline match suppresses an incoming finding ONLY when the incoming severity is `≤` the baselined severity. A stale `LOW` baseline can no longer hide a later `CRITICAL` in the same bucket — escalated findings flow through and the loader logs a warning. Auto-load also logs a warning so users notice when a baseline is silently affecting their numbers (pass `--baseline none` to disable).
+
 Create / update the baseline from a previous report's JSON via `secure-review baseline reports/review-*.json [--reason "test fixture"] [--merge]`. Source: `src/findings/baseline.ts`.
 
 ### Incremental mode (`--since <ref>`)
@@ -397,12 +399,16 @@ Used by both `review` mode (one-shot) and `fix` mode (each verification step).
 ```
 function aggregate(rawFindings):
     grouped = group rawFindings by key:
-                  key = `${file}::${floor(lineStart / 10)}`
-    # CWE and title are deliberately NOT in the key — see `findingFingerprint`
-    # in src/findings/identity.ts. Different models routinely assign different
-    # CWEs (e.g. CWE-78 vs CWE-787 for the same command-injection line) or
-    # rephrase titles for the same bug; including either field would double-count
-    # the same bug as if it were a fresh introduction every iteration.
+                  key = `${file}::${floor(lineStart / 10)}::${cwe || titlePrefix24}`
+    # v2-file-bucket-cwe — see `findingFingerprint` in src/findings/identity.ts.
+    # CWE is in the key so two genuinely-distinct vulns in the same 10-line
+    # bucket (e.g. SQL injection CWE-89 at line 7 vs command injection CWE-78
+    # at line 13) stay separate. CWE-less findings fall back to a 24-char
+    # title prefix so two reviewers reporting "Missing authentication on /admin"
+    # without a CWE still merge, but "Missing authentication" and "Hardcoded
+    # credential" without CWEs in the same bucket stay separate. The
+    # `fingerprint_algorithm` field in evidence JSON records which algorithm
+    # version produced the run for cross-experiment reproducibility.
     for each group:
         merged.id          = synthesized "F-NN" (assigned in iteration order)
         merged.title       = first title that created the bucket
@@ -422,7 +428,7 @@ The `floor(lineStart / 10)` line-bucket is intentionally fuzzy — different rev
 The original research question — *"catch vulnerabilities reliably without overwhelming developers with false positives"* — makes FP suppression a first-class design goal, not an afterthought. Four mechanisms work together:
 
 1. **Inter-reporter corroboration via `confidence`.** A finding reported by only one source receives `confidence = min(1, 1/3) ≈ 0.33`. Findings corroborated by 2 or 3 distinct sources score 0.67 / 1.0 respectively. Reports surface confidence prominently so single-source noise renders as low-confidence by construction — the reader can triage by confidence threshold without losing data.
-2. **Fuzzy bucketing in `aggregate()`.** The same bug reported by three readers at lines 24, 26, and 31 collapses into one finding via `${file}::${floor(lineStart / 10)}` (CWE and title deliberately excluded — see [§ Aggregation algorithm](#aggregation-algorithm)). Without this, the F1-class duplicate noise (e.g. multiple readers re-flagging the same `detect-object-injection` site that ESLint Security already flagged) would inflate the apparent finding count and look like an FP problem when it's actually a deduplication problem.
+2. **Fuzzy bucketing in `aggregate()`.** Three readers reporting the same bug (same CWE) at lines 24, 26, and 31 collapse into one finding via `${file}::${floor(lineStart / 10)}::${cwe || titlePrefix24}` — see [§ Aggregation algorithm](#aggregation-algorithm). Without this, the F1-class duplicate noise (e.g. multiple readers re-flagging the same `detect-object-injection` site that ESLint Security already flagged) would inflate the apparent finding count and look like an FP problem when it's actually a deduplication problem.
 3. **SAST-as-prior-context, not SAST-as-driver.** Per F1, SAST on AI-generated code is mostly silent or FP-heavy. Passing SAST output to readers as *prior context* with the framing "focus on what these missed" steers reader budget toward novel issues instead of duplicating low-signal SAST output.
 4. **Baseline file for known-acceptable findings.** A `.secure-review-baseline.json` records fingerprints of findings the user has explicitly triaged as known/accepted (durable TPs they tolerate, or FPs the model keeps re-finding). Subsequent runs suppress them — the writer never sees them in the fix loop, the report counts them under "baselined" instead of mixing them into "remaining". See [§ Cross-cutting features](#cross-cutting-features).
 
@@ -458,7 +464,7 @@ Three safety nets keep the tool running under transient failures:
 
 1. **`withRetry()`** — exponential backoff for any provider call that throws a transient error (429, 5xx, `ECONNRESET`, "high demand", "fetch failed", `cause`-wrapped network errors, etc.). Defined in `src/util/retry.ts`. Default schedule: 3 attempts at 1s → 2s → fail. Adapters can override (the Anthropic adapter uses 1.5s → 3s, for example).
 2. **Writer parse-failure retry** — if the writer's JSON output isn't parseable, retry once with a stricter "JSON ONLY, no prose" reminder. Catches Sonnet's occasional drift into prose-around-JSON.
-3. **Anthropic prefill `{`** — when `jsonMode=true`, the Anthropic adapter prefills the assistant turn with `{` so the model has to continue inside an open JSON object. Drops most prose drift at the source.
+3. **Anthropic strict-JSON prompt** — Claude 4 models don't support assistant prefilling, so the Anthropic adapter instead injects an explicit "respond with a single JSON object only" instruction in the system prompt when `jsonMode=true`. Drops most prose drift at the source. (Earlier 0.5.x prefilled the assistant turn with `{`; replaced in v1.0.0 — see CHANGELOG.)
 
 ---
 
