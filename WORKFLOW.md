@@ -33,9 +33,8 @@ For readers arriving from `secure-code-despite-ai`, here is how the four modes m
 | `review` | **D** (review phase), generalized to N models | Layers 2–3 (review only) | One-shot multi-model review. Adds the multi-reader union + confidence scoring that single-agent Condition D lacked. |
 | `fix` | **D** (full review → fix → re-review) | Layers 2–3 | Operationalizes Condition D's loop with the rotation + convergence guards motivated by F2 and F3. |
 | `pr` | The protocol's *"running on every commit"* requirement | Layers 2–3, gated | Operationalizes the research question's commit-time validation, scoped to the PR diff (static review only in core). |
-| `attack` / `attack-ai` | Layer-4 extension | Layer 4 | Provided by **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** — deterministic probes and AI-planned probes vs a live URL. |
 
-Layer 4 is intentionally separate from static review and ships in **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**.
+Layer 4 (live HTTP probing) is intentionally separate from static review and ships in **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**.
 
 ---
 
