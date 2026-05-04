@@ -2,7 +2,7 @@
 
 How `secure-review` actually executes each mode. Pseudo-code matches the source — every step here corresponds to real code in `src/modes/` and `src/roles/`.
 
-**Layer 4** (live HTTP probes, ZAP/Nuclei, `attack` / `attack-ai` CLIs) is implemented in the sibling package **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**, not in this repo. The sections below that describe those flows are retained as methodology reference until they are fully relocated.
+**Layer 4** (live HTTP probes, ZAP/Nuclei, `attack` / `attack-ai` CLIs) is implemented in the sibling package **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**, not in this repo. See that repo's WORKFLOW for the runtime probing methodology.
 
 > The design choices in this tool are direct responses to failure modes measured in [`secure-code-despite-ai`](https://github.com/fonCki/secure-code-despite-ai). If something looks over-engineered, the next section explains which experimental finding motivates it.
 
@@ -203,17 +203,9 @@ for i in 0 .. (max_iterations - 1):
     findingsAfter = applyBaseline(findingsAfter, baseline).kept    # FP suppression
     findingsAfter = registry.annotate(findingsAfter)               # stable S-NNN IDs
 
-    # Step B': Optional runtime audit (when --attack-target-url is set).
-    #   cadence = "every"   → re-run attack-ai every iteration; the freshly
-    #                         confirmed runtime findings are aggregated into
-    #                         findingsAfter so the verifier (and the next
-    #                         writer pass) see them on the same revision.
-    #   cadence = "bookend" → reuse the runtime findings from the initial
-    #                         attack phase; they still gate the convergence
-    #                         check below.
-    if attack:
-        runtimeFindings = (cadence == "every") ? attackAi.run() : lastRuntimeFindings
-        findingsAfter   = aggregate(findingsAfter + runtimeFindings)   # additive
+    # (Static-only as of v1.0.0. The Layer-4 runtime hook — attacker model
+    #  alongside writer/verifier — lives in the sibling package
+    #  `secure-review-runtime`.)
 
     # Step C: Bookkeeping
     diff = compare(currentFindings, findingsAfter)
@@ -317,161 +309,11 @@ Runs `review` mode on the full checkout, then filters aggregated findings agains
 ```
 </details>
 
-### `attack` / `attack-ai` branch
+### Runtime branches (carved out)
 
-Requires a reachable **`INPUT_TARGET_URL`** (or YAML `dynamic.target_url`). Optionally merges **`INPUT_AUTH_HEADERS_JSON`**, `SECURE_REVIEW_AUTH_HEADERS_JSON`, `dynamic.auth_headers`, and stdout JSON `{ "headers" }` from **`browser-login-script`** (your Node harness — embed Playwright there if needed). Runs `runAttackMode` or `runAttackAiMode`, then optional **`pentest-scanners`** — **OWASP ZAP baseline** (`docker run ghcr.io/zaproxy/zaproxy:stable zap-baseline.py …`) and **Nuclei** (`nuclei -json-export` if binary on PATH). Posts a Markdown-only **`postPrMarkdownReview`** (no inline diff comments — runtime findings rarely map cleanly to lines). Applies **`evaluateRuntimePrGate`** + built-in **`gateBlocked`** from the primary mode vs `dynamic.gates`.
+The `attack` and `attack-ai` runtime branches of the action — deterministic HTTP probes, AI-planned same-origin probes, `--browser-login-script` authentication, optional ZAP/Nuclei wrappers via `--pentest-scanners`, and their GitHub Action surface — moved to the sibling package **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** as of v1.0.0. See that repo's WORKFLOW for the full per-mode methodology.
 
-<details><summary>Pseudo-code (`attack` | `attack-ai`)</summary>
-
-```
-1–3. Same PR / fork guards as review
-4. Resolve target URL; merge auth headers (config + env JSON + hook script last line JSON)
-5. Run attack OR attack-ai (bounded probes; attacker model for attack-ai)
-6. For each token in INPUT_PENTEST_SCANNERS / --pentest-scanners:
-       zap-baseline → Docker ZAP baseline + parse JUnit to synthetic findings
-       nuclei → nuclei -json-export + parse NDJSON findings
-7. postPrMarkdownReview(cap body)
-8. Exit 2 if built-in probe gate fires OR evaluateRuntimePrGate(merged findings)
-```
-</details>
-
-Fork PR safety: forks don't have access to repo secrets — the job exits early regardless of branch.
-
----
-
-## `attack` mode — Layer 4 runtime probes
-
-Runs deterministic HTTP checks against a live target URL. No model calls, no API keys, and no autonomous exploit generation. The goal is concrete runtime evidence for the protocol's Layer 4, while keeping the scope predictable enough for CI and thesis artifacts.
-
-<details><summary>Pseudo-code</summary>
-
-```
-1. Load `.secure-review.yml`
-2. Resolve target URL from `--target-url` or `dynamic.target_url`
-3. Optionally call `dynamic.healthcheck_url`; abort if it fails
-4. Run configured dynamic checks:
-     - headers: missing CSP, clickjacking protection, nosniff, HTTPS HSTS
-     - cookies: missing HttpOnly, Secure (HTTPS only), SameSite
-     - cors: wildcard or reflected untrusted Origin
-     - sensitive_paths: exposed `/.env`, `/.git/config`, config/debug/OpenAPI files
-5. Normalize observed runtime problems into the same Finding shape used by
-   static review (`D-01`, `D-02`, ...; reportedBy = ["dynamic"]; confidence = 1)
-6. Write markdown report + JSON evidence with:
-     - URL, method, status, duration
-     - request headers used by the probe
-     - response headers (Set-Cookie redacted)
-     - redacted response snippet for exposed sensitive paths
-7. Exit 2 if dynamic gates block on confirmed CRITICAL/HIGH findings
-```
-</details>
-
-Example (requires **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** — same flags as before):
-
-```
-npx secure-review-runtime attack . --target-url http://localhost:3000
-npx secure-review-runtime attack . --target-url http://localhost:3000 --checks headers,cors
-```
-
-Config:
-
-```yaml
-dynamic:
-  enabled: false
-  target_url: http://localhost:3000
-  healthcheck_url: http://localhost:3000/health
-  timeout_seconds: 30
-  checks:
-    - headers
-    - cookies
-    - cors
-    - sensitive_paths
-  sensitive_paths:
-    - /.env
-    - /.git/config
-    - /config.json
-    - /debug
-    - /swagger.json
-    - /openapi.json
-  gates:
-    block_on_confirmed_critical: true
-    block_on_confirmed_high: false
-  # Optional session/Bearer headers on every probe (also: `secure-review-runtime` CLI `-H`)
-  # auth_headers:
-  #   Cookie: "session=..."
-```
-
-This is the deterministic runtime foundation (implemented in **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**). For model-guided runtime testing, use **`attack-ai`** there.
-
-**Authenticated probing:** `dynamic.auth_headers` and **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** CLI `-H "Name: value"` are merged onto every Layer 4 `fetch` so headers/cookies/CORS/sensitive_paths checks and **`attack-ai`** crawl/probes can run as a logged-in user — without browser automation.
-
----
-
-## `attack-ai` mode — authorized AI attack simulator
-
-Runs a bounded same-origin crawl, asks an attacker model to propose safe hypotheses, executes only constrained GET/POST probes, and emits findings only when runtime evidence confirms the behavior. It is designed to help the writer fix vulnerabilities by turning "the model suspects this" into "this URL/parameter produced this reproducible evidence".
-
-<details><summary>Pseudo-code</summary>
-
-```
-1. Load `.secure-review.yml`
-2. Resolve target URL from `--target-url` or `dynamic.target_url`
-3. Optionally call `dynamic.healthcheck_url`; abort if it fails
-4. Crawl same-origin pages only:
-     - GET pages up to dynamic.max_crawl_pages
-     - collect links, forms, methods, and field names
-     - respect dynamic.max_requests and dynamic.rate_limit_per_second
-5. Read source tree as context for localization hints
-6. Call attacker model (`dynamic.attacker`, else `writer`) with:
-     - crawl surface
-     - source context
-     - strict JSON schema for allowed hypotheses only
-7. Sanitize model output:
-     - reject out-of-origin URLs
-     - reject methods other than GET/POST
-     - reject malformed parameter names
-     - reject probes beyond the remaining request budget
-8. Execute safe probe categories:
-     - reflected_input: harmless marker payload must reflect unescaped
-     - error_disclosure: response must show stack trace / exception / DB error text
-     - open_redirect: redirect Location must point at secure-review.invalid
-     - path_exposure: path must return 2xx body content
-9. Normalize confirmed behaviors into Finding objects:
-     - ids A-01, A-02, ...
-     - reportedBy = ["attack-ai"]
-     - confidence = 1
-     - file/line use model source hints when provided, otherwise runtime URL
-10. Write markdown report + JSON evidence with pages, hypotheses, probes, limits,
-    cost, redacted snippets, and confirmed findings
-11. Exit 2 if dynamic gates block on confirmed CRITICAL/HIGH findings
-```
-</details>
-
-Example (**[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**):
-
-```
-npx secure-review-runtime attack-ai . --target-url http://localhost:3000
-npx secure-review-runtime attack-ai . --target-url http://localhost:3000 --max-requests 25 --max-crawl-pages 10
-```
-
-Safety contract:
-
-- Same-origin only by default; the runner discards model-planned external URLs.
-- No destructive HTTP methods, credential theft, shell execution, SSRF, persistence, or high-volume traffic.
-- The model proposes hypotheses, but the runner owns the actual payloads and verification rules.
-- Findings require runtime confirmation; unconfirmed hypotheses stay in the JSON evidence as probes, not findings.
-
-Config additions:
-
-```yaml
-dynamic:
-  max_requests: 50
-  rate_limit_per_second: 2
-  max_crawl_pages: 20
-  attacker:
-    provider: anthropic
-    model: claude-sonnet-4-6
-    skill: skills/authorized-attack-simulator.md
-```
+Fork PR safety: forks don't have access to repo secrets — the static `pr` job exits early regardless of branch.
 
 ---
 
@@ -594,26 +436,13 @@ F2 measured that naive scan→fix→scan loops either fail to converge or active
 
 | Exit mechanism | Type | Failure mode it prevents |
 |---|---|---|
-| `consecutiveCleanIters >= N` | **Convergence** (additive when `attack-ai` is enabled) | A single lenient reader ending the loop while readers it didn't rotate to would still flag issues (the F3 failure mode). When `--attack-target-url` is set, the iteration-clean test also requires runtime findings to be empty, so static-only "blindspot fixes" can no longer end the loop. |
+| `consecutiveCleanIters >= N` | **Convergence** | A single lenient reader ending the loop while readers it didn't rotate to would still flag issues (the F3 failure mode). |
 | `divergenceStreak >= 2` | Bound (regression detector) | The writer is making the codebase worse, not better — stop before the LOC-growth runaway F2 measured at 33–86%. |
 | `block_on_new_critical` | Bound | An iteration that introduces new CRITICAL findings is treated as a regression and short-circuits the loop (the F2 "fixes make it worse" failure mode); on this exit the loop also restores the pre-iteration snapshot. |
 | `max_cost_usd`, `max_wall_time_minutes` | Bound | Runaway loops in cases where convergence is genuinely unreachable for the given codebase / model combination. The pre-run cost estimate (see [§ Cross-cutting features](#cross-cutting-features)) makes the budget contract visible *before* spending. |
 | `max_iterations` (≤ 10) | Bound | Hard ceiling on write churn; bounds the LOC-growth runaway F2 measured at 33–86%. |
 
 The post-loop **final verification with `all_reviewers`** is a separate safety net for a different failure mode: an iteration verifier saying "clean" while readers it didn't rotate to would still flag issues. It is recommended (and the default for new configs created by `init`) precisely because it directly addresses F3's low single-agent resolution rate.
-
-### Runtime-aware fix loop (`--attack-target-url`)
-
-Static review answers "does the source look unsafe?". When `--attack-target-url <url>` is set on `fix` mode (or `dynamic.target_url` is configured), an authorized attacker model also answers "does the *running app* still misbehave?" using the same machinery as standalone `attack-ai` mode (bounded same-origin crawl, model-planned safe probes, runtime-confirmed findings only). On both `fix` and `attack-ai`, **`--attack-provider`**, **`--attack-model`**, and **`--attack-skill`** override the corresponding fields from `dynamic.attacker` (or `writer`) without editing YAML; omitted parts still come from config. The merge is implemented as `mergeAttackerRef()` in `src/modes/attack-ai.ts`.
-
-| Cadence | When attack-ai runs | What the writer sees | Cost shape |
-|---|---|---|---|
-| `bookend` (default) | Once before iter 1 + once after final verification | Iter-1 to-do list = static union ∪ initial runtime findings; later iterations carry the same runtime set forward | Two attacker calls per `fix` run |
-| `every` (`--attack-every-iter`) | Once before iter 1, after every iteration's verifier audit, and after final verification | Each iteration's verifier output is aggregated with a *fresh* runtime audit on the same revision | Up to `max_iterations + 2` attacker calls |
-
-**Additive convergence.** The early-exit test (`findingsAfter.empty`) is evaluated *after* runtime findings are merged into `findingsAfter`, so a clean static reviewer pass that still leaves runtime probes confirming a vulnerability does **not** end the loop. Both signals must be empty for `consecutiveCleanIters` to advance.
-
-**Stable IDs unify the two signals.** Runtime findings are fingerprinted by `{file, line-bucket}` like static findings, so when the attacker reports a reflected-XSS hypothesis with `sourceFile: "src/server.ts"` and `lineStart: 1`, the fingerprint matches a static finding at `src/server.ts:1` and they merge — keeping the same `S-NNN` across iterations and showing up in the report as a single bug confirmed by both a reviewer and the attacker, not as two separate items.
 
 ### Cost gates are not theoretical
 

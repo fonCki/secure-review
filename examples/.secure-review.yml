@@ -7,9 +7,8 @@ writer:
   model: claude-sonnet-4-6
   skill: ../skills/secure-node-writer.md
 
-# Three reviewers, one per provider — the "cross-model" design from
-# Meeting 3 (see project README). Each has its own skill MD defining
-# its role and focus.
+# Three reviewers, one per provider — the cross-model design described in
+# the README. Each has its own skill MD defining its role and focus.
 reviewers:
   - name: codex-web-sec
     provider: openai
@@ -36,8 +35,7 @@ review:
   parallel: true
 
 # Cross-model rotating loop — Iteration N uses reviewers[N % len(reviewers)].
-# This is the Condition F experimental design: each iteration gets a fresh
-# reviewer with different training data.
+# Each iteration gets a fresh reviewer with different training data.
 fix:
   mode: sequential_rotation
   max_iterations: 3
