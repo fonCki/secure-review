@@ -29,6 +29,8 @@ function mk(overrides: Partial<Finding> = {}): Finding {
 
 describe('baselineFromFindings', () => {
   it('captures one entry per unique fingerprint', () => {
+    // Bug 1 fix: fingerprint is now `${file}::${bucket}::${cwe||titlePrefix}`.
+    // No CWE in mk() default, so the title prefix "thing" is the third segment.
     const baseline = baselineFromFindings([
       mk({ file: 'src/a.ts', lineStart: 10 }),
       mk({ file: 'src/a.ts', lineStart: 12 }), // same fingerprint as above
@@ -36,8 +38,8 @@ describe('baselineFromFindings', () => {
     ]);
     expect(baseline.entries).toHaveLength(2);
     expect(baseline.entries.map((e) => e.fingerprint).sort()).toEqual([
-      'src/a.ts::1',
-      'src/b.ts::1',
+      'src/a.ts::1::thing',
+      'src/b.ts::1::thing',
     ]);
   });
 
@@ -91,10 +93,11 @@ describe('mergeBaseline', () => {
       'new-reason',
     );
     expect(merged.entries).toHaveLength(2);
-    const preexisting = merged.entries.find((e) => e.fingerprint === 'src/a.ts::1')!;
+    // Bug 1 fix: fingerprints now include the CWE-or-title-prefix segment.
+    const preexisting = merged.entries.find((e) => e.fingerprint === 'src/a.ts::1::thing')!;
     expect(preexisting.reason).toBe('original-reason'); // NOT overwritten
     expect(preexisting.acceptedAt).toBe(originalAcceptedAt);
-    const added = merged.entries.find((e) => e.fingerprint === 'src/c.ts::20')!;
+    const added = merged.entries.find((e) => e.fingerprint === 'src/c.ts::20::thing')!;
     expect(added.reason).toBe('new-reason');
     expect(merged.updatedAt).not.toBe(merged.createdAt);
   });

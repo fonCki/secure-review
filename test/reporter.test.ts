@@ -133,7 +133,7 @@ describe('json renderers', () => {
     expect(evidence.findings?.[0]?.file).toBe('src/b.ts');
     // Bug 7: reproducibility — version + algorithm stamp on every evidence file
     expect(evidence.tool_version).toBe('9.9.9-test');
-    expect(evidence.fingerprint_algorithm).toBe('v1-file-bucket');
+    expect(evidence.fingerprint_algorithm).toBe('v2-file-bucket-cwe');
   });
 
   it('emits review evidence', () => {
@@ -161,7 +161,7 @@ describe('json renderers', () => {
     expect(evidence.findings).toHaveLength(1);
     // Bug 7: reproducibility — version + algorithm stamp on every evidence file
     expect(evidence.tool_version).toBe('9.9.9-test');
-    expect(evidence.fingerprint_algorithm).toBe('v1-file-bucket');
+    expect(evidence.fingerprint_algorithm).toBe('v2-file-bucket-cwe');
   });
 
   it('omits tool_version when toolVersion option is not provided (SDK callers)', () => {
@@ -186,6 +186,6 @@ describe('json renderers', () => {
     );
     expect(ev.tool_version).toBeUndefined();
     // fingerprint_algorithm is always emitted because it's a constant, not caller-supplied
-    expect(ev.fingerprint_algorithm).toBe('v1-file-bucket');
+    expect(ev.fingerprint_algorithm).toBe('v2-file-bucket-cwe');
   });
 });
