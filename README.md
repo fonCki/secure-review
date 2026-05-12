@@ -33,11 +33,15 @@ The design is grounded in recent LLM-security research showing that (1) SAST alo
 ## Requirements
 
 - **Node.js >= 20** (enforced by `package.json` engines field).
-- **At least one provider API key** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GOOGLE_API_KEY`) for any AI-backed mode. `scan` and `estimate` work with no keys at all.
+- **At least one provider configured** for any AI-backed mode. API mode requires an API key for that provider (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GOOGLE_API_KEY`); CLI mode (`ANTHROPIC_MODE=cli` / `GOOGLE_MODE=cli`) needs the `claude`/`gemini` binary on PATH but no API key. `scan` and `estimate` work with no keys at all.
+- **`git`** is required for diff-based modes (`--since`, `pr` mode PR diff filtering, GitHub Action checkouts).
+- **`npm ci`** (used in the GitHub Action quick-start) requires a committed `package-lock.json` in the consumer repo. Use `npm install` instead if your repo doesn't ship one.
+- **Outbound HTTPS to provider APIs** for AI-backed modes — `api.anthropic.com`, `api.openai.com`, `generativelanguage.googleapis.com`. CI runners with egress restrictions need these allow-listed.
 - **Semgrep** (optional but recommended): install separately to enable the Semgrep SAST layer — `pip install semgrep` or `brew install semgrep`. Without it the Semgrep layer silently degrades to `available: false` and only ESLint + npm audit run.
 - **ESLint v9+ flat config** (optional): required in the target project for the ESLint layer to find any rules. Older `.eslintrc.*` configs are not picked up.
 - **`claude` / `gemini` CLI binaries on PATH** (optional): required only if you set `ANTHROPIC_MODE=cli` or `GOOGLE_MODE=cli` to route through a local subscription instead of the API. The default mode is `api`, which uses HTTP and does not need the CLIs.
 - **`gh` CLI** (optional): required for `secure-review setup-secrets` and for the GitHub Action quick-start. Not needed for local CLI use.
+- **`pr` mode is GitHub-Actions-only** — it requires `GITHUB_EVENT_PATH` and `GITHUB_TOKEN` to be set by the runner (both are injected automatically inside `actions/checkout`-based workflows). Use `review` mode for local testing; running `secure-review pr` from your laptop will fail.
 
 ## Quick start — CLI
 
@@ -51,7 +55,7 @@ npx secure-review review ./src
 
 `.env` in the current directory is auto-loaded — no `source .env` needed.
 
-`init` asks a few yes/no questions (which providers, enable SAST, enter keys now or later) and drops a working config + env file. Use `--yes` to skip the prompts and accept all defaults; that non-interactive path writes `.env.example`, so copy it to `.env` and fill in the keys before running an AI-backed mode.
+`init` asks interactive prompts (yes/no flags for which providers and SAST tools to enable, provider/model choices for the writer, max iterations for the fix loop, and a 3-way choice for GitHub Action mode) and drops a working config + env file. Use `--yes` to skip the prompts and accept all defaults; that non-interactive path writes `.env.example`, so copy it to `.env` and fill in the keys before running an AI-backed mode.
 
 ### Other CLI subcommands
 
@@ -62,8 +66,8 @@ npx secure-review review ./src
 | `secure-review scan <path>` | SAST only — no AI calls, no API keys needed |
 | `secure-review review <path>` | Multi-model review, no file changes |
 | `secure-review fix <path>` | Iterative review → write → re-review loop |
-| `secure-review estimate <path> [--mode review\|fix]` | Print a pre-run cost estimate without invoking any model |
-| `secure-review baseline <findings.json> [--merge] [--reason ...]` | Create or update a `.secure-review-baseline.json` of known/accepted findings to suppress in subsequent runs |
+| `secure-review estimate <path> [--mode review\|fix]` | Print a pre-run cost estimate without invoking any model (see [WORKFLOW.md](WORKFLOW.md) for details) |
+| `secure-review baseline <findings.json> [--merge] [--reason ...]` | Create or update a `.secure-review-baseline.json` of known/accepted findings to suppress in subsequent runs (see [WORKFLOW.md](WORKFLOW.md) for details) |
 | `secure-review benchmark <path>` | Compare multiple writer models head-to-head on fix quality |
 | `secure-review compare <pathA> <pathB>` | Side-by-side security diff of two codebases |
 | `secure-review reviewer-benchmark <path>` | Show what each single model misses vs the combined multi-model ensemble |
@@ -248,7 +252,7 @@ The mode that actually fixes things. Three phases:
    - Step A: Writer applies fixes for the current findings list (iter 1: union; iter 2+: previous verifier's audit).
    - Step B: Next reviewer in rotation acts as the **verifier** and audits the writer's output with fresh eyes (different model = different blind spots).
    - Step C: Baseline filter + stable-ID annotation, then the audit becomes the next iteration's input.
-   - The loop exits when any of these four conditions hits: (a) **N consecutive verifiers** all see clean (full rotation; N = number of configured reviewers), (b) **`max_iterations`** is reached (the for-loop ceiling — `fix.max_iterations` in the config, default 3), (c) a gate fires (`block_on_new_critical`, `max_cost_usd`, `max_wall_time_minutes`), or (d) divergence is detected.
+   - The loop exits when any of these four conditions hits: (a) **N consecutive verifiers** all see clean (full rotation; N = number of configured reviewers), (b) **`max_iterations`** is reached (the for-loop ceiling — `fix.max_iterations` in the config, default 3), (c) a gate fires (`block_on_new_critical`, `block_on_new_high`, `max_cost_usd`, `max_wall_time_minutes`), or (d) divergence is detected.
 3. **Final verification** — by default, all reviewers in parallel re-scan the final state. Catches anything the per-iteration verifiers missed individually.
 
 The writer is **always the same model**; the verifier rotates. This prevents the writer from drifting toward "code that satisfies one specific model" — every iteration a different judge shows up.
@@ -261,7 +265,7 @@ The writer is **always the same model**; the verifier rotates. This prevents the
 - **Rollback** — if the writer introduces a new CRITICAL finding *and* a gate fires, the loop rolls back to the pre-iteration snapshot before stopping. New files created by the writer are also removed.
 - **Divergence detection** — if total findings grow for 2 consecutive iterations, the loop stops to prevent regression spirals (the loop-divergence failure mode).
 - **Filtering** — configure `min_confidence_to_fix` and `min_severity_to_fix` in the config to limit what the writer attempts (e.g. only fix HIGH+ findings with ≥50% confidence).
-- **Incremental mode** — `--since <ref>` restricts the pipeline to files Git reports as changed since that ref. Reviewers (and the writer in `fix` mode) only see the changed files directly. SAST tools scan the entire root, then findings outside the changed-files set are filtered out post-scan (Semgrep and ESLint don't reliably honor per-file include lists, so a scan + filter is the safe path).
+- **Incremental mode** — `--since <ref>` restricts the pipeline to tracked files changed since `<ref>` (via `git diff --name-only --diff-filter=ACMR <ref>`) PLUS untracked, non-gitignored files (via `git ls-files --others --exclude-standard`). Reviewers (and the writer in `fix` mode) only see that changed-files set directly. SAST tools scan the entire root, then findings outside the changed-files set are filtered out post-scan (Semgrep and ESLint don't reliably honor per-file include lists, so a scan + filter is the safe path).
 
 > Earlier versions (pre-0.5.0) used a different loop: each iteration's reviewer scanned alone, single-reviewer-zero exited the loop early, and the initial scan was a vanity baseline metric. See [CHANGELOG.md](CHANGELOG.md) for the migration notes.
 
@@ -338,9 +342,13 @@ For the per-mode runtime flow (sequence diagrams, state diagrams, full pseudo-co
 {
   "task_id": "my-app",
   "tool": "secure-review",
+  "tool_version": "0.5.2",
+  "fingerprint_algorithm": "sha256:file+line-bucket+cwe-or-title-prefix",
   "condition": "F-fix",
   "run": 1,
   "timestamp": "2026-04-28T12:00:00.000Z",
+  "generation_time_seconds": 184.7,
+  "total_cost_usd": 0.42,
   "model_version": "claude-sonnet-4-6|gpt-5-codex+claude-sonnet-4-6+gemini-2.5-pro",
   "total_findings_initial": 12,
   "findings_by_severity_initial": { "CRITICAL": 1, "HIGH": 3, "MEDIUM": 5, "LOW": 2, "INFO": 1 },
@@ -356,6 +364,18 @@ For the per-mode runtime flow (sequence diagrams, state diagrams, full pseudo-co
   "iterations": 3,
   "review_status": "ok",
   "failed_reviewers": [],
+  "findings": [
+    {
+      "id": "S-001",
+      "severity": "HIGH",
+      "title": "Unsanitized user input flows to SQL query",
+      "file": "src/db/users.ts",
+      "line": 42,
+      "cwe": "CWE-89",
+      "reportedBy": ["codex-web-sec", "sonnet-owasp"],
+      "confidence": 0.67
+    }
+  ],
   "per_iteration": [
     { "iteration": 1, "reviewer": "codex-web-sec",      "findings_found": 8 },
     { "iteration": 2, "reviewer": "sonnet-owasp",       "findings_found": 5 },

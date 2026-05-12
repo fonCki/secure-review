@@ -31,7 +31,7 @@ The rest of this document describes *what* the tool does. The two cross-cutting 
 
 ## Mapping modes to pipeline layers
 
-How the four modes map to the defense-in-depth pipeline.
+How the five modes map to the defense-in-depth pipeline.
 
 | `secure-review` mode | Pipeline layer | Notes |
 |---|---|---|
@@ -167,7 +167,7 @@ currentFindings = initialFindings    # ← becomes the writer's iter-1 to-do lis
 
 > SAST runs sequentially before the parallel reader fan-out. Readers always run in parallel in `fix` mode (no opt-out), so the `config.review.parallel` flag has no effect here.
 
-> Gates are also evaluated **once after the initial scan** (before entering the loop) and **once after final verification** — not only inside the iteration loop. The initial-scan and final-verification gate passes only check the cost/wall-time bounds (there's no "before" findings set to diff against, so the severity-regression gates `block_on_new_critical` and `block_on_new_high` — same semantics as `block_on_new_critical` but firing on newly-introduced HIGH-severity findings — only fire from iteration 1 onward — see `src/gates/evaluate.ts:32`). So cost/wall-time can short-circuit fix mode at any of three points; severity-regression at iter 1+ only.
+> Gates are also evaluated **once after the initial scan** (before entering the loop) and **once after final verification** — not only inside the iteration loop. Cost and wall-time gates fire at all four sites (initial scan, every iteration, divergence break, final verification); severity gates (`block_on_new_critical` and `block_on_new_high` — same semantics as `block_on_new_critical` but firing on newly-introduced HIGH-severity findings) fire from iteration 1 onward (per `src/gates/evaluate.ts:32`). So cost/wall-time can short-circuit fix mode at any of four points; severity-regression at iter 1+ only.
 
 ### Phase 2: Iteration loop
 
@@ -194,15 +194,17 @@ for i in 0 .. (max_iterations - 1):
     verifier = pickReviewer(readers, i, config.fix.mode)
 
     # Step A: Writer applies fixes (writer is fixed; same model every iteration)
-    if currentFindings.length > 0:
-        writerRun = writer.fix(currentFindings)   # writes files with sanitization
+    filteredQueue = currentFindings.filter(min_confidence_to_fix, min_severity_to_fix)
+    if filteredQueue.length > 0:
+        writerRun = writer.fix(filteredQueue)     # writes files with sanitization
                                                   # (NUL replaced; other controls stripped)
     # else: skip writer call; verifier still runs to confirm clean state
 
     # Step B: Verifier audits (rotating reader = fresh eyes)
     sastAfter   = run all SAST tools
     afterFiles  = re-read source tree
-    verifierRun = verifier.review(afterFiles, prior=sastAfter.findings)
+    prior = config.sast.inject_into_reviewer_context ? sastAfter.findings : undefined
+    verifierRun = verifier.review(afterFiles, prior=prior)
 
     findingsAfter = aggregate(verifierRun + sastAfter)
     findingsAfter = applyBaseline(findingsAfter, baseline).kept    # FP suppression
@@ -217,6 +219,7 @@ for i in 0 .. (max_iterations - 1):
         .resolved   = in input but not in audit (matched by fingerprint)
         .introduced = in audit but not in input
         .newCritical = introduced.filter(severity == CRITICAL).count
+        .newHigh     = introduced.filter(severity == HIGH).count
 
     # Step D: Divergence detection — record a flag if findings grow 2
     #   iterations in a row. The flag is consumed AFTER gates so a divergent
@@ -231,6 +234,7 @@ for i in 0 .. (max_iterations - 1):
     #   introduced new CRITICAL(s) AND a gate fires, the loop also restores
     #   the pre-iteration snapshot before stopping (Improvement 3, fix.ts).
     if config.gates.block_on_new_critical and newCritical > 0:    break  # rollback + gateBlocked=true
+    if config.gates.block_on_new_high     and newHigh     > 0:    break  # rollback + gateBlocked=true
     if cumulativeCost > config.gates.max_cost_usd:                break
     if elapsedMs / 60000 > config.gates.max_wall_time_minutes:    break
 
@@ -252,12 +256,21 @@ for i in 0 .. (max_iterations - 1):
 ### Phase 3: Final verification (parallel)
 
 ```
-if config.fix.final_verification == 'all_reviewers':
-    finalScan = parallel(reader.review(finalFiles) for reader in readers)
-    finalFindings = aggregate(finalScan + SAST(root))
-elif config.fix.final_verification == 'first_reviewer':
-    finalScan = [readers[0].review(finalFiles)]
-    finalFindings = aggregate(finalScan + SAST(root))
+if config.fix.final_verification != 'none':
+    finalFiles = readSourceTree(root, only)
+    finalSast  = runSast(root)                                  # SAST runs first
+    verifiers  = (config.fix.final_verification == 'all_reviewers')
+                 ? readers
+                 : [readers[0]]
+    # All verifiers run in parallel via Promise.all; SAST findings are passed
+    # as prior context only when sast.inject_into_reviewer_context is true.
+    finalScan = parallel(
+        reader.review(finalFiles,
+                      prior = config.sast.inject_into_reviewer_context
+                              ? finalSast.findings : undefined)
+        for reader in verifiers
+    )
+    finalFindings = aggregate(finalScan + finalSast.findings)
 # else 'none': skip
 ```
 
@@ -288,7 +301,7 @@ Together these prevent the failure mode that motivated the 0.5.0 redesign: a sin
 
 ## `pr` mode — GitHub Action entrypoint
 
-Runs a single static-review flow against a pull request. There is no input-mode switch in v1.0.0 — the legacy `INPUT_RUNTIME_MODE` input and the older `INPUT_MODE` branch are both gone; the only remaining knob from the pre-v1 surface is the deprecated `--autofix` flag, which is now a no-op kept only for backward compatibility with existing workflow YAML. Runtime probing moved to [`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime).
+Runs a single static-review flow against a pull request. The legacy `INPUT_RUNTIME_MODE` input is gone, but `INPUT_MODE` is still read for backward compatibility (`action.yml:12` still exposes `mode`; `src/cli.ts:628, 899` still parse it). Its values are now redirected: `fix` maps to `--autofix` (itself a deprecated no-op), and `attack` / `attack-ai` print a deprecation warning pointing users at [`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime). The only practical knob from the pre-v1 surface is the deprecated `--autofix` flag, which is now a no-op kept only for backward compatibility with existing workflow YAML. Runtime probing moved to [`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime).
 
 Runs `review` mode on the full checkout, then filters aggregated findings against the PR diff before posting a single review with line-anchored comments where GitHub permits them.
 
@@ -323,7 +336,7 @@ These cut across `review` and `fix` rather than belonging to a single mode. Each
 
 ### Stable finding identity across iterations
 
-Inside a `fix` run, the same underlying bug must keep the same identity even when the verifier rephrases it (different line by ±a few, different title, different CWE). Without this, the per-iteration `introduced` count is artificially inflated by relabeling.
+Inside a `fix` run, the same underlying bug must keep the same identity even when the verifier rephrases the title or shifts the reported line by ±a few — but a genuinely different CWE creates a new identity (correct behavior: a writer that "fixes" by relabeling the CWE should not silently inherit the old S-NNN). Without stable identity for rephrased findings, the per-iteration `introduced` count would be artificially inflated by relabeling.
 
 ```
 fingerprint(f) = `${file}::${floor(lineStart / 10)}::${cwe || titlePrefix24}`
@@ -351,7 +364,7 @@ Create / update the baseline from a previous report's JSON via `secure-review ba
 
 ### Incremental mode (`--since <ref>`)
 
-`review --since main` and `fix --since main` only review files that `git diff --name-only --diff-filter=ACMR <ref>` reports as changed. The whole pipeline (SAST, AI readers, writer, snapshot/restore) is restricted to that file set, so on a tight feedback loop you pay only for the files that changed since the ref. Deleted files are excluded automatically (we can't review what's not in the working tree).
+`secure-review review <path> --since main` and `secure-review fix <path> --since main` only review files that `git diff --name-only --diff-filter=ACMR <ref>` reports as changed (`<path>` is required — see `src/cli.ts:426, 504`). The whole pipeline (SAST, AI readers, writer, snapshot/restore) is restricted to that file set, so on a tight feedback loop you pay only for the files that changed since the ref. Deleted files are excluded automatically (we can't review what's not in the working tree).
 
 ### Pre-run cost estimate
 
@@ -432,7 +445,7 @@ The `floor(lineStart / 10)` line-bucket is intentionally fuzzy — different rev
 A stated design goal — *"catch vulnerabilities reliably without overwhelming developers with false positives"* — makes FP suppression a first-class concern, not an afterthought. Four mechanisms work together:
 
 1. **Inter-reporter corroboration via `confidence`.** A finding reported by only one source receives `confidence = min(1, 1/3) ≈ 0.33`. Findings corroborated by 2 or 3 distinct sources score 0.67 / 1.0 respectively. Reports surface confidence prominently so single-source noise renders as low-confidence by construction — the reader can triage by confidence threshold without losing data.
-2. **Fuzzy bucketing in `aggregate()`.** Three readers reporting the same bug (same CWE) at lines 24, 26, and 31 collapse into one finding via `${file}::${floor(lineStart / 10)}::${cwe || titlePrefix24}` — see [§ Aggregation algorithm](#aggregation-algorithm). Without this, duplicate noise from the SAST-blind failure mode (e.g. multiple readers re-flagging the same `detect-object-injection` site that ESLint Security already flagged) would inflate the apparent finding count and look like an FP problem when it's actually a deduplication problem.
+2. **Fuzzy bucketing in `aggregate()`.** Two readers reporting the same bug (same CWE) at lines 24 and 26 collapse into one finding via `${file}::${floor(lineStart / 10)}::${cwe || titlePrefix24}` (both land in bucket 2); a third reader pointing at line 31 lives in bucket 3 and stays separate — see [§ Aggregation algorithm](#aggregation-algorithm). Without this, duplicate noise from the SAST-blind failure mode (e.g. multiple readers re-flagging the same `detect-object-injection` site that ESLint Security already flagged) would inflate the apparent finding count and look like an FP problem when it's actually a deduplication problem.
 3. **SAST-as-prior-context, not SAST-as-driver.** Per the SAST-blind failure mode, SAST on AI-generated code is mostly silent or FP-heavy. Passing SAST output to readers as *prior context* with the framing "focus on what these missed" steers reader budget toward novel issues instead of duplicating low-signal SAST output.
 4. **Baseline file for known-acceptable findings.** A `.secure-review-baseline.json` records fingerprints of findings the user has explicitly triaged as known/accepted (durable TPs they tolerate, or FPs the model keeps re-finding). Subsequent runs suppress them — the writer never sees them in the fix loop, the report counts them under "baselined" instead of mixing them into "remaining". See [§ Cross-cutting features](#cross-cutting-features).
 
@@ -500,11 +513,12 @@ Scope boundaries — none of these are bugs, they're trust calibrations.
 
 ## Output schema
 
-`review` and `fix` modes emit three report files per run:
+`review` mode emits three report files per run; `fix` mode emits four (the writer's diff is saved alongside):
 
 - `reports/<mode>-<timestamp>.md` — human-readable Markdown report.
 - `reports/<mode>-<timestamp>.html` — self-contained interactive report (inline CSS + JS, no external assets). Sortable/filterable findings list, collapsible details per finding, fix-mode adds a before/after delta + per-iteration timeline. Works offline; safe to commit, attach to a PR comment, or open from a CI artifact.
 - `reports/<mode>-<timestamp>.json` — structured evidence JSON, schema-stable across versions (defined in `src/findings/schema.ts`).
+- `reports/fix-<timestamp>.patch` *(fix mode only)* — unified diff of the writer's changes across the run, written by `src/cli.ts:576-593`.
 
 **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** (`attack` / `attack-ai`) emits:
 
