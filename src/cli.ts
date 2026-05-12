@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -11,12 +11,72 @@ import { createInterface } from 'node:readline/promises';
 // 'set -a; source .env; set +a' before every invocation.
 // process.loadEnvFile is a built-in Node 20.12+ API — no extra dependency.
 // Security: .env files should be restricted to mode 600 and listed in .gitignore.
+//
+// Behavior: loadEnvFile does NOT override existing process.env entries (Node
+// convention, matches dotenv/python-dotenv defaults). When the shell already
+// exports a key that .env also defines, the shell value silently wins. That
+// has been a confusing failure mode in practice ("I edited .env, why is the
+// tool still using the old key?"). Detect the conflict up front and warn.
 if (existsSync('.env')) {
+  warnEnvConflicts('.env');
   try {
     process.loadEnvFile('.env');
   } catch {
     // older Node, or malformed .env — fall back silently
   }
+}
+
+function parseEnvFile(path: string): Map<string, string> {
+  const vars = new Map<string, string>();
+  let content: string;
+  try {
+    content = readFileSync(path, 'utf8');
+  } catch {
+    return vars;
+  }
+  for (const rawLine of content.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let val = line.slice(eq + 1).trim();
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
+      val = val.slice(1, -1);
+    }
+    vars.set(key, val);
+  }
+  return vars;
+}
+
+function maskSecret(v: string): string {
+  if (v.length <= 8) return '****';
+  return `${v.slice(0, 4)}…${v.slice(-4)}`;
+}
+
+function warnEnvConflicts(envFilePath: string): void {
+  const fileVars = parseEnvFile(envFilePath);
+  const conflicts: Array<{ key: string; fileValue: string; shellValue: string }> = [];
+  for (const [key, fileValue] of fileVars) {
+    const shellValue = process.env[key];
+    if (shellValue !== undefined && shellValue !== fileValue) {
+      conflicts.push({ key, fileValue, shellValue });
+    }
+  }
+  if (conflicts.length === 0) return;
+  const out = process.stderr;
+  out.write('\n⚠ .env vs shell environment conflict — shell value is being used:\n');
+  for (const c of conflicts) {
+    out.write(`   ${c.key}:\n`);
+    out.write(`     .env:   ${maskSecret(c.fileValue)}   (ignored)\n`);
+    out.write(`     shell:  ${maskSecret(c.shellValue)}   (used — Node convention)\n`);
+  }
+  out.write(
+    `   To use .env values instead, run:  unset ${conflicts.map((c) => c.key).join(' ')}\n\n`,
+  );
 }
 import { Command, InvalidArgumentError } from 'commander';
 import { z } from 'zod';
