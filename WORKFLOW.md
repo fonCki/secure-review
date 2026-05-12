@@ -4,35 +4,41 @@ How `secure-review` actually executes each mode. Pseudo-code matches the source 
 
 **Layer 4** (live HTTP probes, ZAP/Nuclei, `attack` / `attack-ai` CLIs) is implemented in the sibling package **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**, not in this repo. See that repo's WORKFLOW for the runtime probing methodology.
 
-> The design choices in this tool are direct responses to failure modes measured in [`secure-code-despite-ai`](https://github.com/fonCki/secure-code-despite-ai). If something looks over-engineered, the next section explains which experimental finding motivates it.
+> The design choices in this tool are direct responses to failure modes we measured in a controlled study we ran. If something looks over-engineered, the next section explains which finding motivates it.
 
 ---
 
 ## Why this design exists
 
-`secure-review` is a direct response to four findings from [`secure-code-despite-ai`](https://github.com/fonCki/secure-code-despite-ai) — a controlled experiment (96 runs: 2 AI tools × 4 tasks × 3 runs × 4 conditions) that measured how well teams can validate AI-generated code with the tools available today. Each of the four design choices below maps to a specific failure mode that experiment surfaced.
+`secure-review` is a direct response to four failure modes we measured in a controlled study we ran on how well teams can validate AI-generated code with the tools available today. Three of those failure modes get descriptive short-names that are used throughout the rest of this document:
+
+- **SAST-blind failure mode** — off-the-shelf SAST (Semgrep, ESLint Security) misses most AI-generated bugs and is mostly silent or false-positive-heavy on AI-generated code.
+- **Loop-divergence failure mode** — a single-agent scan→fix→scan loop tends to grow the finding count and the LOC instead of shrinking them.
+- **Single-model self-review failure mode** — the same agent that found an issue often fails to fix it; resolution rates on a single-model loop are unreliable and sometimes negative.
+
+Each of the design choices below maps to one of these failure modes.
 
 | Empirical finding | Design response in `secure-review` |
 |---|---|
-| **F1 — SAST is nearly blind on AI-generated code.** Semgrep found 0 code-level vulnerabilities in 23 of 24 baseline runs (547 rules across JS/TS/Node.js/OWASP). ESLint Security was mostly false positives. | SAST is treated as **prior context** for AI readers, not as the driver. `inject_into_reviewer_context: true` tells readers *"here's what static rules saw — focus on what they miss."* |
-| **F2 — Naive scan→fix→scan loops do not converge.** In 4 of 6 Claude Code Condition C runs, the third iteration had *more* findings than the second. LOC grew 33–86%. | `fix` mode requires **N consecutive clean iterations** by *different* readers (`consecutiveCleanIters >= N`), gates on `block_on_new_critical`, and bounds work via `max_iterations`, `max_cost_usd`, and `max_wall_time_minutes`. Convergence is enforced, not assumed. |
-| **F3 — Single-model review-then-fix has a low resolution rate.** Independent AI review found 24–43 real issues per run, but resolution after the same agent's fix was 0–54%, occasionally negative. | **Cross-model rotating verifier** + **final verification with `all_reviewers`**. A single model "satisfying itself" is exactly the failure mode F3 measured. |
-| **The research question** explicitly cites *"without overwhelming developers with false positives."* | Aggregation is FP-control machinery: 10-line bucketing per `{file, line-bucket, cwe-or-title-prefix}` so cross-model relabelings of the same CWE merge instead of double-counting, `confidence = min(1, \|reportedBy\| / 3)` so single-source noise is visibly downweighted, and an optional baseline file (`.secure-review-baseline.json`) lets users mark known-acceptable findings (severity-aware: a stale `LOW` baseline can no longer hide a later `CRITICAL` in the same bucket). See [§ False positives](#false-positives). |
+| **SAST-blind failure mode** — Semgrep found 0 code-level vulnerabilities in 23 of 24 AI-generated baselines (547 rules across JS/TS/Node.js/OWASP). ESLint Security was mostly false positives. | SAST is treated as **prior context** for AI readers, not as the driver. `inject_into_reviewer_context: true` tells readers *"here's what static rules saw — focus on what they miss."* |
+| **Loop-divergence failure mode** — in 4 of 6 single-agent fix-loop runs we measured, the third iteration had *more* findings than the second. LOC grew 33–86%. | `fix` mode requires **N consecutive clean iterations** by *different* readers (`consecutiveCleanIters >= N`), gates on `block_on_new_critical`, and bounds work via `max_iterations`, `max_cost_usd`, and `max_wall_time_minutes`. Convergence is enforced, not assumed. |
+| **Single-model self-review failure mode** — independent AI review found 24–43 real issues per run, but resolution after the same agent's fix was 0–54%, occasionally negative. | **Cross-model rotating verifier** + **final verification with `all_reviewers`**. A single model "satisfying itself" is exactly this failure mode. |
+| **False-positive control** — a stated design goal is *"catch vulnerabilities reliably without overwhelming developers with false positives."* | Aggregation is FP-control machinery: 10-line bucketing per `{file, line-bucket, cwe-or-title-prefix}` so cross-model relabelings of the same CWE merge instead of double-counting, `confidence = min(1, \|reportedBy\| / 3)` so single-source noise is visibly downweighted, and an optional baseline file (`.secure-review-baseline.json`) lets users mark known-acceptable findings (severity-aware: a stale `LOW` baseline can no longer hide a later `CRITICAL` in the same bucket). See [§ False positives](#false-positives). |
 
 The rest of this document describes *what* the tool does. The two cross-cutting concerns this design exists to address — false-positive suppression and convergence — get dedicated sections at the end.
 
 ---
 
-## Mapping to experiment conditions
+## Mapping modes to pipeline layers
 
-For readers arriving from `secure-code-despite-ai`, here is how the four modes map to the experimental conditions and the defense-in-depth pipeline (Section 11 of the protocol).
+How the four modes map to the defense-in-depth pipeline.
 
-| `secure-review` mode | Experiment condition | Pipeline layer | Notes |
-|---|---|---|---|
-| `scan` | **B** (SAST-only) | Layer 2 | Per F1, intentionally insufficient on its own — useful as fast triage, not as a security gate. |
-| `review` | **D** (review phase), generalized to N models | Layers 2–3 (review only) | One-shot multi-model review. Adds the multi-reader union + confidence scoring that single-agent Condition D lacked. |
-| `fix` | **D** (full review → fix → re-review) | Layers 2–3 | Operationalizes Condition D's loop with the rotation + convergence guards motivated by F2 and F3. |
-| `pr` | The protocol's *"running on every commit"* requirement | Layers 2–3, gated | Operationalizes the research question's commit-time validation, scoped to the PR diff (static review only in core). |
+| `secure-review` mode | Pipeline layer | Notes |
+|---|---|---|
+| `scan` | Layer 2 | Per the SAST-blind failure mode, intentionally insufficient on its own — useful as fast triage, not as a security gate. |
+| `review` | Layers 2–3 (review only) | One-shot multi-model review. Adds the multi-reader union + confidence scoring that a single-agent review lacks. |
+| `fix` | Layers 2–3 | Full review → fix → re-review with the rotation + convergence guards motivated by the loop-divergence and single-model self-review failure modes. |
+| `pr` | Layers 2–3, gated | Commit-time validation scoped to the PR diff (static review only in core). |
 
 Layer 4 (live HTTP probing) is intentionally separate from static review and ships in **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**.
 
@@ -44,7 +50,7 @@ Two distinct roles. They never overlap.
 
 | Role | Reads code? | Edits files? | Count |
 |---|---|---|---|
-| **Reader** (reviewer) | Yes — analyzes files, reports findings | **No** | 1..N (configured) |
+| **Reader** | Yes — analyzes files, reports findings | **No** | 1..N (configured) |
 | **Writer** | Reads code as context | **Yes — the only role that modifies files** | Exactly 1 |
 
 A "reader" and a "writer" can be the **same model** with different system prompts (skills) — they're distinct *roles*, not distinct models. In the default config, OpenAI `gpt-4o-mini` appears once as a reader (with `web-sec-reviewer.md` skill) and could appear again as the writer (with `secure-node-writer.md` skill). Different jobs, same brain.
@@ -161,7 +167,7 @@ currentFindings = initialFindings    # ← becomes the writer's iter-1 to-do lis
 
 > SAST runs sequentially before the parallel reader fan-out. Readers always run in parallel in `fix` mode (no opt-out), so the `config.review.parallel` flag has no effect here.
 
-> Gates are also evaluated **once after the initial scan** (before entering the loop) and **once after final verification** — not only inside the iteration loop. The initial-scan and final-verification gate passes only check the cost/wall-time bounds (there's no "before" findings set to diff against, so the severity-regression gates `block_on_new_critical` / `block_on_new_high` only fire from iteration 1 onward — see `src/gates/evaluate.ts:32`). So cost/wall-time can short-circuit fix mode at any of three points; severity-regression at iter 1+ only.
+> Gates are also evaluated **once after the initial scan** (before entering the loop) and **once after final verification** — not only inside the iteration loop. The initial-scan and final-verification gate passes only check the cost/wall-time bounds (there's no "before" findings set to diff against, so the severity-regression gates `block_on_new_critical` and `block_on_new_high` — same semantics as `block_on_new_critical` but firing on newly-introduced HIGH-severity findings — only fire from iteration 1 onward — see `src/gates/evaluate.ts:32`). So cost/wall-time can short-circuit fix mode at any of three points; severity-regression at iter 1+ only.
 
 ### Phase 2: Iteration loop
 
@@ -234,7 +240,7 @@ for i in 0 .. (max_iterations - 1):
     # Step G: Divergence break (after gates so rollback can fire)
     if divergenceTriggered: break
 
-    # Step G: Stability check — only exit when N consecutive iters all clean
+    # Step H: Stability check — only exit when N consecutive iters all clean
     if findingsAfter.empty:
         consecutiveCleanIters += 1
         if consecutiveCleanIters >= N: break    # ← full rotation clean
@@ -259,7 +265,7 @@ The final verification catches what individual iteration verifiers might have mi
 
 ### On the relationship between `max_iterations` and N
 
-`max_iterations` (the loop ceiling) and N (the number of configured readers) are independent settings — they're not linked anywhere in code. The `init` command defaults `max_iterations` to N, but you can change it freely in `.secure-review.yml`. What happens with each pairing:
+`max_iterations` (the loop ceiling) and N (the number of configured readers) are independent settings — they're not linked anywhere in code. The schema default is `3` (`src/config/schema.ts`); the `init` command sets `max_iterations` to N to match the reviewer count it scaffolds. You can change either freely in `.secure-review.yml`. What happens with each pairing:
 
 | pairing | rotation sequence (N=3 → A,B,C) | behavior |
 |---|---|---|
@@ -282,21 +288,20 @@ Together these prevent the failure mode that motivated the 0.5.0 redesign: a sin
 
 ## `pr` mode — GitHub Action entrypoint
 
-Branches on **`INPUT_MODE`** (default **`review`**). The legacy `INPUT_RUNTIME_MODE` input was removed in v1.0.0 along with the runtime probing surface — see [`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime) for the runtime equivalent.
-
-### `review` branch (default)
+Runs a single static-review flow against a pull request. There is no input-mode switch in v1.0.0 — the legacy `INPUT_RUNTIME_MODE` input and the older `INPUT_MODE` branch are both gone; the only remaining knob from the pre-v1 surface is the deprecated `--autofix` flag, which is now a no-op kept only for backward compatibility with existing workflow YAML. Runtime probing moved to [`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime).
 
 Runs `review` mode on the full checkout, then filters aggregated findings against the PR diff before posting a single review with line-anchored comments where GitHub permits them.
 
 ![pr mode: fork guard, diff commentable-line map, full-checkout review, PR review buckets, and exit status](docs/images/pr-mode.png)
 
-<details><summary>Pseudo-code (`review`)</summary>
+<details><summary>Pseudo-code</summary>
 
 ```
 1. Verify PR context: GITHUB_EVENT_PATH, owner/repo/pr_number
 2. Skip if PR is from a fork (no secret access)
 3. Fetch PR file list, parse diffs into commentable line numbers per file
-4. Run review mode on the full checkout (full multi-reader scan + SAST)
+4. Always run runReviewMode on the full checkout (full multi-reader scan + SAST)
+   — no INPUT_MODE branching; the deprecated --autofix flag is a no-op
 5. Hand all findings + the per-file commentable-line map to `postPrReview()`
    (defined in src/reporters/github-pr.ts). Inside, findings are split into 3 buckets:
      - inline:        in a changed file AND on a commentable line → posted as inline review comment
@@ -308,17 +313,13 @@ Runs `review` mode on the full checkout, then filters aggregated findings agains
 ```
 </details>
 
-### Runtime branches (carved out)
-
-The `attack` and `attack-ai` runtime branches of the action — deterministic HTTP probes, AI-planned same-origin probes, `--browser-login-script` authentication, optional ZAP/Nuclei wrappers via `--pentest-scanners`, and their GitHub Action surface — moved to the sibling package **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** as of v1.0.0. See that repo's WORKFLOW for the full per-mode methodology.
-
-Fork PR safety: forks don't have access to repo secrets — the static `pr` job exits early regardless of branch.
+Fork PR safety: forks don't have access to repo secrets — the static `pr` job exits early.
 
 ---
 
 ## Cross-cutting features
 
-These cut across `review` and `fix` rather than belonging to a single mode. Each one targets a specific failure mode the post-experiment review surfaced.
+These cut across `review` and `fix` rather than belonging to a single mode. Each one targets a specific failure mode we observed.
 
 ### Stable finding identity across iterations
 
@@ -372,7 +373,7 @@ Pre-run cost estimate (fix):
 Proceed? [y/N]
 ```
 
-Interactive shells get the prompt; `--yes` skips it; `--no-estimate` skips the preview entirely (useful for the experiment's reproducibility scripts). In non-interactive contexts (CI, piped stdout) the estimate is still printed but the run proceeds without prompting — `gates.max_cost_usd` remains the budget contract.
+Interactive shells get the prompt; `--yes` skips it; `--no-estimate` skips the preview entirely (useful for batched reproducibility scripts). In non-interactive contexts (CI, piped stdout) the estimate is still printed but the run proceeds without prompting — `gates.max_cost_usd` remains the budget contract.
 
 Standalone preview without invoking any model: `secure-review estimate ./src --mode fix`. Source: `src/util/estimate-cost.ts`.
 
@@ -384,7 +385,7 @@ SAST runs before readers and feeds them context (configurable via `inject_into_r
 
 ```
 SAST tools currently wrapped:
-  - semgrep   (auto config; rules from semgrep registry)
+  - semgrep   (explicit registry packs: p/javascript, p/typescript, p/nodejs, p/owasp-top-ten — not `--config auto`)
   - eslint    (via local `npx --no-install eslint`; skipped if unavailable or not runnable)
   - npm audit (runs `npm audit --json` with the scan path as cwd)
 ```
@@ -411,7 +412,7 @@ function aggregate(rawFindings):
     # without a CWE still merge, but "Missing authentication" and "Hardcoded
     # credential" without CWEs in the same bucket stay separate. The
     # `fingerprint_algorithm` field in evidence JSON records which algorithm
-    # version produced the run for cross-experiment reproducibility.
+    # version produced the run for cross-run reproducibility.
     for each group:
         merged.id          = synthesized "F-NN" (assigned in iteration order)
         merged.title       = first title that created the bucket
@@ -428,36 +429,37 @@ The `floor(lineStart / 10)` line-bucket is intentionally fuzzy — different rev
 
 ## False positives
 
-The original research question — *"catch vulnerabilities reliably without overwhelming developers with false positives"* — makes FP suppression a first-class design goal, not an afterthought. Four mechanisms work together:
+A stated design goal — *"catch vulnerabilities reliably without overwhelming developers with false positives"* — makes FP suppression a first-class concern, not an afterthought. Four mechanisms work together:
 
 1. **Inter-reporter corroboration via `confidence`.** A finding reported by only one source receives `confidence = min(1, 1/3) ≈ 0.33`. Findings corroborated by 2 or 3 distinct sources score 0.67 / 1.0 respectively. Reports surface confidence prominently so single-source noise renders as low-confidence by construction — the reader can triage by confidence threshold without losing data.
-2. **Fuzzy bucketing in `aggregate()`.** Three readers reporting the same bug (same CWE) at lines 24, 26, and 31 collapse into one finding via `${file}::${floor(lineStart / 10)}::${cwe || titlePrefix24}` — see [§ Aggregation algorithm](#aggregation-algorithm). Without this, the F1-class duplicate noise (e.g. multiple readers re-flagging the same `detect-object-injection` site that ESLint Security already flagged) would inflate the apparent finding count and look like an FP problem when it's actually a deduplication problem.
-3. **SAST-as-prior-context, not SAST-as-driver.** Per F1, SAST on AI-generated code is mostly silent or FP-heavy. Passing SAST output to readers as *prior context* with the framing "focus on what these missed" steers reader budget toward novel issues instead of duplicating low-signal SAST output.
+2. **Fuzzy bucketing in `aggregate()`.** Three readers reporting the same bug (same CWE) at lines 24, 26, and 31 collapse into one finding via `${file}::${floor(lineStart / 10)}::${cwe || titlePrefix24}` — see [§ Aggregation algorithm](#aggregation-algorithm). Without this, duplicate noise from the SAST-blind failure mode (e.g. multiple readers re-flagging the same `detect-object-injection` site that ESLint Security already flagged) would inflate the apparent finding count and look like an FP problem when it's actually a deduplication problem.
+3. **SAST-as-prior-context, not SAST-as-driver.** Per the SAST-blind failure mode, SAST on AI-generated code is mostly silent or FP-heavy. Passing SAST output to readers as *prior context* with the framing "focus on what these missed" steers reader budget toward novel issues instead of duplicating low-signal SAST output.
 4. **Baseline file for known-acceptable findings.** A `.secure-review-baseline.json` records fingerprints of findings the user has explicitly triaged as known/accepted (durable TPs they tolerate, or FPs the model keeps re-finding). Subsequent runs suppress them — the writer never sees them in the fix loop, the report counts them under "baselined" instead of mixing them into "remaining". See [§ Cross-cutting features](#cross-cutting-features).
 
-What the tool deliberately does **not** do: assign a final TP/FP label. That remains a human judgement call. The JSON evidence preserves `reportedBy`, `confidence`, and per-reporter raw findings so downstream analysis can compute TP/FP rates the same way `secure-code-despite-ai` does.
+What the tool deliberately does **not** do: assign a final TP/FP label. That remains a human judgement call. The JSON evidence preserves `reportedBy`, `confidence`, and per-reporter raw findings so downstream analysis can compute TP/FP rates with whatever convention the consuming pipeline prefers.
 
 ---
 
 ## Convergence
 
-F2 measured that naive scan→fix→scan loops either fail to converge or actively regress (4 of 6 Claude Code Condition C runs got *worse* by iteration 3). `fix` mode encodes five exit mechanisms — four are bounds, one is a *positive* convergence criterion:
+The loop-divergence failure mode showed that naive scan→fix→scan loops either fail to converge or actively regress (4 of 6 single-agent runs we measured got *worse* by iteration 3). `fix` mode encodes six exit mechanisms — five are bounds, one is a *positive* convergence criterion:
 
 | Exit mechanism | Type | Failure mode it prevents |
 |---|---|---|
-| `consecutiveCleanIters >= N` | **Convergence** | A single lenient reader ending the loop while readers it didn't rotate to would still flag issues (the F3 failure mode). |
-| `divergenceStreak >= 2` | Bound (regression detector) | The writer is making the codebase worse, not better — stop before the LOC-growth runaway F2 measured at 33–86%. |
-| `block_on_new_critical` | Bound | An iteration that introduces new CRITICAL findings is treated as a regression and short-circuits the loop (the F2 "fixes make it worse" failure mode); on this exit the loop also restores the pre-iteration snapshot. |
-| `max_cost_usd`, `max_wall_time_minutes` | Bound | Runaway loops in cases where convergence is genuinely unreachable for the given codebase / model combination. The pre-run cost estimate (see [§ Cross-cutting features](#cross-cutting-features)) makes the budget contract visible *before* spending. |
-| `max_iterations` (≤ 10) | Bound | Hard ceiling on write churn; bounds the LOC-growth runaway F2 measured at 33–86%. |
+| `consecutiveCleanIters >= N` | **Convergence** | A single lenient reader ending the loop while readers it didn't rotate to would still flag issues (the single-model self-review failure mode). |
+| `divergenceStreak >= 2` | Bound (regression detector) | The writer is making the codebase worse, not better — stop before the LOC-growth runaway we measured at 33–86%. |
+| `block_on_new_critical` | Bound | An iteration that introduces new CRITICAL findings is treated as a regression and short-circuits the loop (the "fixes make it worse" loop-divergence failure mode); on this exit the loop also restores the pre-iteration snapshot. |
+| `max_cost_usd` | Bound | Runaway loops in cases where convergence is genuinely unreachable for the given codebase / model combination. The pre-run cost estimate (see [§ Cross-cutting features](#cross-cutting-features)) makes the budget contract visible *before* spending. |
+| `max_wall_time_minutes` | Bound | Wall-clock ceiling for the same runaway scenarios — independent from cost so a fast-but-cheap loop and a slow-but-cheap loop both have an exit. |
+| `max_iterations` (≤ 10) | Bound | Hard ceiling on write churn; bounds the LOC-growth runaway we measured at 33–86%. |
 
-The post-loop **final verification with `all_reviewers`** is a separate safety net for a different failure mode: an iteration verifier saying "clean" while readers it didn't rotate to would still flag issues. It is recommended (and the default for new configs created by `init`) precisely because it directly addresses F3's low single-agent resolution rate.
+The post-loop **final verification with `all_reviewers`** is a separate safety net for a different failure mode: an iteration verifier saying "clean" while readers it didn't rotate to would still flag issues. It is recommended (and the default for new configs created by `init`) precisely because it directly addresses the single-model self-review failure mode's low single-agent resolution rate.
 
 ### Cost gates are not theoretical
 
-`secure-code-despite-ai` measured Condition C (single agent, 3 iterations) at **145K–188K output tokens for Task 01 alone** — roughly $2–3 per Task 01 run on Sonnet 4.6's April 2026 pricing. With multi-model rotation each `fix`-mode iteration adds a writer call plus a verifier call (and the reader fan-out runs once at the start and again at final verification). On a tight feedback loop, `max_cost_usd` and `max_wall_time_minutes` are the difference between a $5 PR check and a $50 one — they're not optional safety belts, they're the budget contract.
+A single-agent fix loop (3 iterations) we measured ran at **145K–188K output tokens** on one small task alone — roughly $2–3 per run on Sonnet 4.6's April 2026 pricing. With multi-model rotation each `fix`-mode iteration adds a writer call plus a verifier call (and the reader fan-out runs once at the start and again at final verification). On a tight feedback loop, `max_cost_usd` and `max_wall_time_minutes` are the difference between a $5 PR check and a $50 one — they're not optional safety belts, they're the budget contract.
 
-To reproduce the same convergence analysis the experiment does, see [§ Output schema](#output-schema) for the exact JSON fields.
+To run the same convergence analysis on your own runs, see [§ Output schema](#output-schema) for the exact JSON fields.
 
 ---
 
@@ -467,13 +469,13 @@ Three safety nets keep the tool running under transient failures:
 
 1. **`withRetry()`** — exponential backoff for any provider call that throws a transient error (429, 5xx, `ECONNRESET`, "high demand", "fetch failed", `cause`-wrapped network errors, etc.). Defined in `src/util/retry.ts`. Default schedule: 3 attempts at 1s → 2s → fail. Adapters can override (the Anthropic adapter uses 1.5s → 3s, for example).
 2. **Writer parse-failure retry** — if the writer's JSON output isn't parseable, retry once with a stricter "JSON ONLY, no prose" reminder. Catches Sonnet's occasional drift into prose-around-JSON.
-3. **Anthropic strict-JSON prompt** — Claude 4 models don't support assistant prefilling, so the Anthropic adapter instead injects an explicit "respond with a single JSON object only" instruction in the system prompt when `jsonMode=true`. Drops most prose drift at the source. (Earlier 0.5.x prefilled the assistant turn with `{`; replaced in v1.0.0 — see CHANGELOG.)
+3. **Anthropic strict-JSON prompt** — Claude 4 models don't support assistant prefilling, so the Anthropic adapter instead appends an explicit "respond with a single JSON object only" instruction to the user message when `jsonMode=true` (see `src/adapters/anthropic-api.ts`). Drops most prose drift at the source. (Earlier 0.5.x prefilled the assistant turn with `{`; replaced in v1.0.0 — see CHANGELOG.)
 
 ---
 
 ## Verifying locally
 
-**This repository (`secure-review`)** implements static modes (`scan`, `review`, `fix`, …). The pseudo-code for **`attack`** / **`attack-ai`** below describes behavior implemented in **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**, not paths under this repo.
+**This repository (`secure-review`)** implements static modes (`scan`, `review`, `fix`, …). Runtime modes (**`attack`** / **`attack-ai`**) live in **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**.
 
 1. **Automated suite (this repo)** — From the repo root: `npm run typecheck` and `npm test` (Vitest). Tests cover parsing, aggregation, static reporters, **`fix`** rotation / gates / reviewer health, and related CLI options — **not** live HTTP attack fixtures (those moved to **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**).
 2. **Runtime package** — Clone or open **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**: `npm install && npm test` after linking `secure-review`. Use **`npx secure-review-runtime attack …`** / **`attack-ai …`** against a local server when validating Layer 4.
@@ -484,15 +486,15 @@ Full checklist (including `estimate`, `build`, and `build:action`): [README § D
 
 ---
 
-## Limitations
+## Known limitations
 
-Adapted from `secure-code-despite-ai`'s Section 13 threats-to-validity. None of these are bugs — they're scope boundaries the tool acknowledges so users calibrate trust accordingly.
+Scope boundaries — none of these are bugs, they're trust calibrations.
 
 - **Automation boundary.** **This package** covers static + AI review (layers 1–3). **Layer 4** — deterministic `attack`, bounded same-origin `attack-ai`, optional **ZAP** / **Nuclei**, and **browser-login-script** hooks — ships in **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)**. Built-in probes there remain **bounded** (same-origin-safe categories in `attack-ai`; no autonomous exploit chains beyond configured scanners **plus** Nuclei traffic you explicitly enable).
-- **Non-determinism.** AI readers and writers produce different outputs on the same input. The JSON evidence records `model_version` per run, but temperature and seed are not pinned uniformly across providers (and some providers don't expose seeds at all). Studies should plan multiple runs per condition, mirroring the protocol's 3-runs-per-task baseline.
+- **Non-determinism.** AI readers and writers produce different outputs on the same input. The JSON evidence records `model_version` per run, but temperature and seed are not pinned uniformly across providers (and some providers don't expose seeds at all). Plan multiple runs when reproducibility matters.
 - **TP/FP labeling stays human.** Aggregation downweights single-source findings via `confidence`, but final true-positive vs. false-positive classification still requires a human or a separate evaluation harness. The tool surfaces evidence; it does not adjudicate.
-- **Provider model evolution.** Models change between runs — the protocol calls this out explicitly as a threat to reproducibility. JSON evidence captures `model_version` and `timestamp` so historical comparisons remain auditable even when not byte-reproducible.
-- **Ground-truth-free fix success rate.** `findings_resolved` counts findings present in the initial scan but absent in final verification. It does **not** prove the underlying vulnerability was fixed — only that no reader plus SAST reported it. F3 measured exactly this gap (resolution rates of 0–54% on a single-model loop). Multi-model rotation reduces this risk but does not eliminate it.
+- **Provider model evolution.** Models change between runs — a known threat to reproducibility. JSON evidence captures `model_version` and `timestamp` so historical comparisons remain auditable even when not byte-reproducible.
+- **Ground-truth-free fix success rate.** `findings_resolved` counts findings present in the initial scan but absent in final verification. It does **not** prove the underlying vulnerability was fixed — only that no reader plus SAST reported it. This is exactly the gap the single-model self-review failure mode measured (resolution rates of 0–54% on a single-model loop). Multi-model rotation reduces this risk but does not eliminate it.
 
 ---
 
@@ -512,20 +514,20 @@ Adapted from `secure-code-despite-ai`'s Section 13 threats-to-validity. None of 
 - `reports/attack-ai-<timestamp>.md` — human-readable AI attack simulation report.
 - `reports/attack-ai-<timestamp>.json` — structured runtime evidence (`condition: "F-attack-ai"`) including `target_url`, `crawled_pages`, `hypotheses`, `probes`, `runtime_findings`, safety `limits`, `gate_blocked`, and `gate_reasons`.
 
-The JSON schema is **deliberately compatible with `secure-code-despite-ai`'s Condition D evidence format** — **`secure-review`** runs use `condition: "F-review"` or `"F-fix"`; **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** adds `"F-attack"` and `"F-attack-ai"` so results plot alongside the original A/B/C/D baselines. Think of the combined toolchain as **Condition F**: an extension of the original experimental matrix, not a parallel format.
+The JSON schema is stable across versions. **`secure-review`** runs tag themselves with `condition: "F-review"` or `"F-fix"`; **[`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime)** uses `"F-attack"` and `"F-attack-ai"`. The `condition` field is an opaque tag used by downstream analysis scripts to identify run type — treat it as a fixed string label, not a semantic claim.
 
-### Mapping to research metrics
+### Mapping to common metrics
 
-For studies that want to compute the same metrics the protocol defines (see `secure-code-despite-ai/docs/experiment-protocol.md` §10):
+For pipelines that want to compute standard evaluation metrics from the JSON evidence:
 
-| Research metric | JSON field(s) | Notes |
+| Metric | JSON field(s) | Notes |
 |---|---|---|
 | **True-positive rate** (proxy) | `findings[].confidence`, `findings[].reportedBy` | Per-finding signal, not per-run. Use confidence threshold to approximate; final TP/FP labels require human review. |
-| **Fix success rate** | `findings_resolved / total_findings_initial` (also pre-computed as `resolution_rate_pct`) | Identical semantics to Condition C/D's resolution rate. |
-| **Convergence** | `per_iteration[].findings_in` vs `findings_out`; top-level `new_findings_introduced` | F2's "did fixing make it worse?" is `new_findings_introduced > 0` or any `findings_out > findings_in` across iterations. |
-| **Severity distribution** | `findings_by_severity_initial`, `findings_by_severity_after_fix` | Same `SeverityBreakdown` shape as Condition B/C/D output. |
-| **Cost per condition** | `total_cost_usd`, `per_iteration[].cost_usd` | USD-denominated; feeds the protocol's productivity metric. |
-| **Iteration count** | top-level `iterations`, `per_iteration[].iteration` | Maps to "Number of feedback iterations needed". |
+| **Fix success rate** | `findings_resolved / total_findings_initial` (also pre-computed as `resolution_rate_pct`) | Resolution rate across the fix loop. |
+| **Convergence** | `per_iteration[].findings_in` vs `findings_out`; top-level `new_findings_introduced` | "Did fixing make it worse?" is `new_findings_introduced > 0` or any `findings_out > findings_in` across iterations. |
+| **Severity distribution** | `findings_by_severity_initial`, `findings_by_severity_after_fix` | Same `SeverityBreakdown` shape used throughout the codebase. |
+| **Cost per run** | `total_cost_usd`, `per_iteration[].cost_usd` | USD-denominated. |
+| **Iteration count** | top-level `iterations`, `per_iteration[].iteration` | Number of feedback iterations the loop actually ran. |
 | **Non-determinism control** | `model_version`, `session_id`, `timestamp`, `run` | Enough metadata to identify and replay any single run. |
 | **CRITICAL-introduced regressions** | `notes` (set to `"Gate blocked: ..."` when applicable) | Otherwise inferable from `per_iteration` deltas + `findings_by_severity_*`. |
 | **Per-iteration verifier identity** | `per_iteration[].reviewer` (alias `verifier`) | Lets you reconstruct which model audited which iteration in `fix` mode — necessary for cross-model coverage analysis. |

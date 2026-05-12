@@ -23,12 +23,21 @@ The design is grounded in recent LLM-security research showing that (1) SAST alo
 
 | | GitHub Copilot code review | secure-review |
 |---|---|---|
-| Models | 1 (OpenAI via Copilot) | N, any provider |
+| Models | 1 (OpenAI via Copilot) | anthropic / openai / google (3 supported providers) |
 | Security-specialized | No (general quality) | Yes (skill-configurable) |
 | Agreement signal across models | No | Yes |
 | SAST integrated with AI | No | Yes (Semgrep + ESLint + npm audit) |
 | Provider-agnostic | No (Copilot only) | Yes |
 | Empirical justification | Marketing | Grounded in LLM-security research (see below) |
+
+## Requirements
+
+- **Node.js >= 20** (enforced by `package.json` engines field).
+- **At least one provider API key** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GOOGLE_API_KEY`) for any AI-backed mode. `scan` and `estimate` work with no keys at all.
+- **Semgrep** (optional but recommended): install separately to enable the Semgrep SAST layer — `pip install semgrep` or `brew install semgrep`. Without it the Semgrep layer silently degrades to `available: false` and only ESLint + npm audit run.
+- **ESLint v9+ flat config** (optional): required in the target project for the ESLint layer to find any rules. Older `.eslintrc.*` configs are not picked up.
+- **`claude` / `gemini` CLI binaries on PATH** (optional): required only if you set `ANTHROPIC_MODE=cli` or `GOOGLE_MODE=cli` to route through a local subscription instead of the API. The default mode is `api`, which uses HTTP and does not need the CLIs.
+- **`gh` CLI** (optional): required for `secure-review setup-secrets` and for the GitHub Action quick-start. Not needed for local CLI use.
 
 ## Quick start — CLI
 
@@ -46,9 +55,10 @@ npx secure-review review ./src
 
 ### Other CLI subcommands
 
+**Modes** (9) — the actual review/fix/analysis pipelines:
+
 | Command | Purpose |
 |---|---|
-| `secure-review init` | Scaffold `.secure-review.yml` + `.env` or `.env.example` + optional GitHub Actions workflow |
 | `secure-review scan <path>` | SAST only — no AI calls, no API keys needed |
 | `secure-review review <path>` | Multi-model review, no file changes |
 | `secure-review fix <path>` | Iterative review → write → re-review loop |
@@ -57,10 +67,16 @@ npx secure-review review ./src
 | `secure-review benchmark <path>` | Compare multiple writer models head-to-head on fix quality |
 | `secure-review compare <pathA> <pathB>` | Side-by-side security diff of two codebases |
 | `secure-review reviewer-benchmark <path>` | Show what each single model misses vs the combined multi-model ensemble |
-| `secure-review setup-secrets` | Push API keys from local `.env` to GitHub Action secrets via `gh` CLI |
 | `secure-review pr` | GitHub Action entry point: static multi-model **review** with PR inline comments (see `action.yml`) |
 
-> **One key is enough.** You don't need keys for all three providers — secure-review runs with as few as **one reader**, as long as the writer also uses an enabled provider. Disable any provider during `init` (or remove its entry from `.secure-review.yml`) and the tool simply doesn't instantiate that provider. This is useful if you only have an OpenAI key, or want to keep cost down to a single provider.
+**Utilities** (2) — setup helpers that don't run a review:
+
+| Command | Purpose |
+|---|---|
+| `secure-review init` | Scaffold `.secure-review.yml` + `.env` or `.env.example` + optional GitHub Actions workflow |
+| `secure-review setup-secrets` | Push API keys from local `.env` to GitHub Action secrets via `gh` CLI |
+
+> **One key is enough.** You don't need keys for all three providers — secure-review runs with as few as **one reviewer**, as long as the writer also uses an enabled provider. Disable any provider during `init` (or remove its entry from `.secure-review.yml`) and the tool simply doesn't instantiate that provider. This is useful if you only have an OpenAI key, or want to keep cost down to a single provider.
 
 ## Quick start — GitHub Action
 
@@ -162,6 +178,7 @@ writers:
 
 gates:
   block_on_new_critical: true
+  block_on_new_high: false              # default — set true to also fail on new HIGH findings (see `pr` mode)
   max_cost_usd: 20
   max_wall_time_minutes: 15
 
@@ -198,7 +215,7 @@ GITHUB_TOKEN=...
 secure-review scan ./src
 ```
 
-Runs Semgrep, then ESLint, then npm audit, and normalizes their output to the same `Finding` schema the AI readers use. No LLM calls, no API keys required. Cheapest pre-commit triage.
+Runs Semgrep, then ESLint, then npm audit, and normalizes their output to the same `Finding` schema the AI reviewers use. No LLM calls, no API keys required. Cheapest pre-commit triage.
 
 ### `review` — multi-model parallel one-shot
 
@@ -209,7 +226,7 @@ secure-review review ./src --baseline none # ignore any local .secure-review-bas
 secure-review review ./src --yes           # skip the cost-estimate prompt
 ```
 
-SAST runs first, then every reader (e.g. anthropic-haiku + openai-mini + gemini-flash) scans the **same code** with the SAST findings passed as prior context when enabled. Reviewers run in parallel by default; set `review.parallel: false` in `.secure-review.yml` to run them sequentially. Findings are deduped by `{file, line-bucket, cwe-or-title-prefix}` — overlapping findings at the same location merge ONLY when they share a CWE (or, when CWE is missing, a 24-char title prefix). Two genuinely-distinct vulnerabilities in the same 10-line bucket of the same file (e.g., a SQL injection at line 7 and a command injection at line 13) stay separate. Cross-model agreement on the same CWE merges with `reportedBy` accumulating names. Confidence per finding is `min(1, |reportedBy| / 3)`, so a finding flagged by 2 of 3 reporters is high-confidence. The report sorts findings by agreement count descending and highlights multi-model agreement with a badge.
+SAST runs first, then every reviewer (e.g. anthropic-haiku + openai-mini + gemini-flash) scans the **same code** with the SAST findings passed as prior context when enabled. Reviewers run in parallel by default; set `review.parallel: false` in `.secure-review.yml` to run them sequentially. Findings are deduped by `{file, line-bucket, cwe-or-title-prefix}` — overlapping findings at the same location merge ONLY when they share a CWE (or, when CWE is missing, a 24-char title prefix). Two genuinely-distinct vulnerabilities in the same 10-line bucket of the same file (e.g., a SQL injection at line 7 and a command injection at line 13) stay separate. Cross-model agreement on the same CWE merges with `reportedBy` accumulating names. Confidence per finding is `min(1, |reportedBy| / 3)`, so a finding flagged by 2 of 3 reporters is high-confidence. The report sorts findings by agreement count descending and highlights multi-model agreement with a badge.
 
 If a `.secure-review-baseline.json` is present in the scan root (or `--baseline <path>` is set), findings whose fingerprint matches an entry are excluded from the headline `findings` array (still recorded under `baselineSuppressed` for transparency). With `--since <ref>`, only files changed since that git ref are reviewed — useful on iterative PR workflows where the full tree hasn't changed.
 
@@ -226,13 +243,13 @@ secure-review fix ./src --yes --no-estimate           # CI-friendly: skip prompt
 
 The mode that actually fixes things. Three phases:
 
-1. **Initial union scan** — SAST runs first, then *all* readers run in parallel. The aggregated union becomes the writer's iter-1 to-do list (no reader's blind spots get a free pass).
+1. **Initial union scan** — SAST runs first, then *all* reviewers run in parallel. The aggregated union becomes the writer's iter-1 to-do list (no reviewer's blind spots get a free pass).
 2. **Iteration loop** (rotating verifier per iter):
    - Step A: Writer applies fixes for the current findings list (iter 1: union; iter 2+: previous verifier's audit).
-   - Step B: Next reader in rotation audits the writer's output with fresh eyes (different model = different blind spots).
+   - Step B: Next reviewer in rotation acts as the **verifier** and audits the writer's output with fresh eyes (different model = different blind spots).
    - Step C: Baseline filter + stable-ID annotation, then the audit becomes the next iteration's input.
-   - The loop only exits when **N consecutive verifiers** all see clean (full rotation), or a gate fires (`block_on_new_critical`, `max_cost_usd`, `max_wall_time_minutes`), or divergence is detected.
-3. **Final verification** — by default, all readers in parallel re-scan the final state. Catches anything the per-iteration verifiers missed individually.
+   - The loop exits when any of these four conditions hits: (a) **N consecutive verifiers** all see clean (full rotation; N = number of configured reviewers), (b) **`max_iterations`** is reached (the for-loop ceiling — `fix.max_iterations` in the config, default 3), (c) a gate fires (`block_on_new_critical`, `max_cost_usd`, `max_wall_time_minutes`), or (d) divergence is detected.
+3. **Final verification** — by default, all reviewers in parallel re-scan the final state. Catches anything the per-iteration verifiers missed individually.
 
 The writer is **always the same model**; the verifier rotates. This prevents the writer from drifting toward "code that satisfies one specific model" — every iteration a different judge shows up.
 
@@ -242,9 +259,9 @@ The writer is **always the same model**; the verifier rotates. This prevents the
 - **Baseline / FP suppression** — findings whose fingerprint matches `.secure-review-baseline.json` are filtered before the writer ever sees them and never appear in the `remaining` set, so the loop spends only on net-new issues.
 - **Stable finding IDs across iterations** — every finding is assigned a session-scoped `S-NNN` keyed on `{file, line-bucket, cwe-or-title-prefix}`. The same bug (same CWE) keeps the same ID even when the verifier rephrases the title, so the per-iteration `resolved` and `introduced` deltas in the report reflect actual writer effects, not relabeling.
 - **Rollback** — if the writer introduces a new CRITICAL finding *and* a gate fires, the loop rolls back to the pre-iteration snapshot before stopping. New files created by the writer are also removed.
-- **Divergence detection** — if total findings grow for 2 consecutive iterations, the loop stops to prevent regression spirals (the F2 failure mode).
+- **Divergence detection** — if total findings grow for 2 consecutive iterations, the loop stops to prevent regression spirals (the loop-divergence failure mode).
 - **Filtering** — configure `min_confidence_to_fix` and `min_severity_to_fix` in the config to limit what the writer attempts (e.g. only fix HIGH+ findings with ≥50% confidence).
-- **Incremental mode** — `--since <ref>` restricts the entire pipeline (SAST + readers + writer + final verification) to files Git reports as changed since that ref.
+- **Incremental mode** — `--since <ref>` restricts the pipeline to files Git reports as changed since that ref. Reviewers (and the writer in `fix` mode) only see the changed files directly. SAST tools scan the entire root, then findings outside the changed-files set are filtered out post-scan (Semgrep and ESLint don't reliably honor per-file include lists, so a scan + filter is the safe path).
 
 > Earlier versions (pre-0.5.0) used a different loop: each iteration's reviewer scanned alone, single-reviewer-zero exited the loop early, and the initial scan was a vanity baseline metric. See [CHANGELOG.md](CHANGELOG.md) for the migration notes.
 
@@ -315,7 +332,7 @@ For the per-mode runtime flow (sequence diagrams, state diagrams, full pseudo-co
 
 ## Evidence JSON
 
-Every run emits a self-contained JSON with per-iteration counts and severity breakdowns — suitable for plotting, diffing across runs, or feeding into dashboards:
+`review` and `fix` modes emit a self-contained JSON evidence file with per-iteration counts and severity breakdowns — suitable for plotting, diffing across runs, or feeding into dashboards. Other modes emit markdown summaries or stdout output: `benchmark`, `compare`, and `reviewer-benchmark` write markdown to `reports/`, and `scan` prints a JSON summary to stdout (no report file).
 
 ```json
 {
@@ -337,7 +354,13 @@ Every run emits a self-contained JSON with per-iteration counts and severity bre
   "lines_of_code_fixed": 0,
   "reviewers": ["codex-web-sec", "sonnet-owasp", "gemini-dependencies"],
   "iterations": 3,
-  "per_iteration": [...]
+  "review_status": "ok",
+  "failed_reviewers": [],
+  "per_iteration": [
+    { "iteration": 1, "reviewer": "codex-web-sec",      "findings_found": 8 },
+    { "iteration": 2, "reviewer": "sonnet-owasp",       "findings_found": 5 },
+    { "iteration": 3, "reviewer": "gemini-dependencies","findings_found": 4 }
+  ]
 }
 ```
 
