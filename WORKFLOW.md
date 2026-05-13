@@ -409,7 +409,7 @@ When `inject_into_reviewer_context: true`, SAST findings are passed to AI reader
 
 ## Finding identity & aggregation
 
-Both `review` and `fix` need to answer "is this the same bug?" — for deduplicating cross-reporter overlap in one call (the aggregator), for tracking a bug across iterations (the stable-identity registry), and for matching against `.secure-review-baseline.json` entries (the baseline). All three share one fingerprint definition.
+Both `review` and `fix` need to answer "is this the same bug?" — for deduplicating cross-reporter overlap in one call (the aggregator), for tracking a bug across iterations (the stable-identity registry), and for matching against `.secure-review-baseline.json` entries (the baseline). All three share one fingerprint definition, so a change to the algorithm (e.g. bucket size 10 → 5) updates all three consistently.
 
 ### The fingerprint
 
@@ -447,10 +447,6 @@ Used by `review` (one-shot) and every iteration of `fix`. Source: `src/findings/
 Inside a `fix` run, the same bug gets re-reported across iterations as the verifier rotates. Without a stable identity, the per-iter `introduced` count would be inflated by relabeling, and you couldn't follow one bug through the loop.
 
 A session-scoped registry assigns `S-NNN` the first time a fingerprint is seen, and reuses it for every subsequent sighting. The stable ID surfaces in markdown reports next to the per-call `F-NN` (e.g. `[S-007]`) so a reader can follow one bug across iterations. Source: `src/findings/identity.ts`.
-
-### Why one fingerprint, three uses
-
-Aggregation, cross-iteration diff, and baseline matching all need the same answer to "is this the same bug?". Sharing one fingerprint function guarantees they agree — change the bucket size from 10 to 5 and all three update consistently.
 
 ---
 
