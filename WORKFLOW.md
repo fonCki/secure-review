@@ -20,10 +20,10 @@ Each of the design choices below maps to one of these failure modes.
 
 | Empirical finding | Design response in `secure-review` |
 |---|---|
-| **SAST-blind failure mode** — Semgrep found 0 code-level vulnerabilities in 23 of 24 AI-generated baselines (547 rules across JS/TS/Node.js/OWASP). ESLint Security was mostly false positives. | SAST is treated as **prior context** for AI readers, not as the driver. `inject_into_reviewer_context: true` tells readers *"here's what static rules saw — focus on what they miss."* |
+| **SAST-blind failure mode** — Semgrep found 0 code-level vulnerabilities in 23 of 24 AI-generated baselines (547 rules across JS/TS/Node.js/OWASP). ESLint Security was mostly false positives. | SAST is treated as prior context for AI readers via `inject_into_reviewer_context: true`, not as a standalone driver. See [§ SAST integration](#sast-integration). |
 | **Loop-divergence failure mode** — in 4 of 6 single-agent fix-loop runs we measured, the third iteration had *more* findings than the second. LOC grew 33–86%. | `fix` mode requires **N consecutive clean iterations** by *different* readers (`consecutiveCleanIters >= N`), gates on `block_on_new_critical`, and bounds work via `max_iterations`, `max_cost_usd`, and `max_wall_time_minutes`. Convergence is enforced, not assumed. |
 | **Single-model self-review failure mode** — independent AI review found 24–43 real issues per run, but resolution after the same agent's fix was 0–54%, occasionally negative. | **Cross-model rotating verifier** + **final verification with `all_reviewers`**. A single model "satisfying itself" is exactly this failure mode. |
-| **False-positive control** — a stated design goal is *"catch vulnerabilities reliably without overwhelming developers with false positives."* | Aggregation is FP-control machinery: 10-line bucketing per `{file, line-bucket, cwe-or-title-prefix}` so cross-model relabelings of the same CWE merge instead of double-counting, `confidence = min(1, \|reportedBy\| / 3)` so single-source noise is visibly downweighted, and an optional baseline file (`.secure-review-baseline.json`) lets users mark known-acceptable findings (severity-aware: a stale `LOW` baseline can no longer hide a later `CRITICAL` in the same bucket). See [§ False positives](#false-positives). |
+| **False-positive control** — a stated design goal is *"catch vulnerabilities reliably without overwhelming developers with false positives."* | Aggregation is FP-control machinery: cross-reporter dedup + confidence downweighting + an optional baseline file (`.secure-review-baseline.json`). See [§ Finding identity & aggregation](#finding-identity--aggregation), [§ Baseline / FP suppression](#baseline--fp-suppression), and [§ False positives](#false-positives). |
 
 The rest of this document describes *what* the tool does. The two cross-cutting concerns this design exists to address — false-positive suppression and convergence — get dedicated sections at the end.
 
@@ -36,7 +36,7 @@ The validation pipeline this tool fits into has four layers. `secure-review` imp
 ![Defense-in-depth pipeline](docs/images/defense-in-depth.png)
 
 - **Layer 1 — Generation Guardrails.** `.cursorrules`, `.windsurfrules`, OWASP-aware system prompts. Guide the AI to write secure code from the start, before any code exists to review. Out of scope for this package — you configure this in your IDE / AI assistant.
-- **Layer 2 — CI/CD SAST gate.** Semgrep + ESLint + `npm audit` on every PR. Findings are injected as prior context for Layer 3 readers via `inject_into_reviewer_context: true`, not used as a standalone gate (see the SAST-blind failure mode above).
+- **Layer 2 — CI/CD SAST gate.** Semgrep + ESLint + `npm audit` on every PR. Output is fed into Layer 3 via `inject_into_reviewer_context: true` rather than used as a standalone gate — see [§ SAST integration](#sast-integration).
 - **Layer 3 — AI review and fix.** Multi-model union review with a cross-model rotating fix loop. Convergence guards — clean-rotation requirement, divergence detection, and hard bounds on iterations / cost / wall-time — are motivated by the loop-divergence and single-model self-review failure modes.
 - **Layer 4 — Runtime probing.** Live HTTP probes (`attack`, `attack-ai`, ZAP, Nuclei) catch flaws SAST and static AI review can't see. Ships in [`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime), not in this package.
 
@@ -112,7 +112,7 @@ Use it when you want a fast, free, AI-free triage.
 
 ## `review` mode — multi-model parallel one-shot
 
-SAST runs first, then every reader scans the same code. Findings are merged by `{file, line-bucket, cwe-or-title-prefix}` — overlapping findings at the same location merge ONLY when they share a CWE (or, when CWE is missing, a 24-char title prefix). Two genuinely-distinct vulnerabilities in the same 10-line bucket of the same file (e.g., a SQL injection at line 7 and a command injection at line 13) stay separate. Cross-model agreement on the same CWE still merges; confidence per finding is `min(1, |reportedBy| / 3)` so a finding flagged by 2 of 3 reporters is high-confidence.
+SAST runs first, then every reader scans the same code. Findings from all readers + SAST are merged by fingerprint (see [§ Finding identity & aggregation](#finding-identity--aggregation)) so cross-model agreement on the same CWE collapses to one finding with a higher confidence score.
 
 ![review mode: readSourceTree and runAllSast feed reviewer calls, aggregate, and review reports](docs/images/review-mode.png)
 
@@ -346,22 +346,6 @@ Fork PR safety: forks don't have access to repo secrets — the static `pr` job 
 
 These cut across `review` and `fix` rather than belonging to a single mode. Each one targets a specific failure mode we observed.
 
-### Stable finding identity across iterations
-
-Inside a `fix` run, the same underlying bug must keep the same identity even when the verifier rephrases the title or shifts the reported line by ±a few — but a genuinely different CWE creates a new identity (correct behavior: a writer that "fixes" by relabeling the CWE should not silently inherit the old S-NNN). Without stable identity for rephrased findings, the per-iteration `introduced` count would be artificially inflated by relabeling.
-
-```
-fingerprint(f) = `${file}::${floor(lineStart / 10)}::${cwe || titlePrefix24}`
-# v2-file-bucket-cwe — same CWE keeps the same identity even when the
-# verifier rephrases the title; relabeling with a *different* CWE produces
-# a NEW fingerprint (so a writer that "fixes" by changing CWE labels
-# does not silently inherit the old S-NNN).
-registry assigns S-NNN the first time a fingerprint is seen and
-re-uses it for every subsequent sighting in the same session.
-```
-
-The stable ID surfaces in markdown reports next to the per-call `F-NN` aggregator id (e.g. `[S-007]`) so a reader can follow one bug across the iterations. Source: `src/findings/identity.ts`.
-
 ### Baseline / FP suppression
 
 A `.secure-review-baseline.json` file records fingerprints of findings the user has triaged as known-acceptable. Both `review` and `fix` auto-detect a baseline file in the scan root, or take an explicit `--baseline <path>` (or `--baseline none` to opt out). Fingerprints in the baseline are filtered:
@@ -379,6 +363,8 @@ Create / update the baseline from a previous report's JSON via `secure-review ba
 `secure-review review <path> --since main` and `secure-review fix <path> --since main` only review files that `git diff --name-only --diff-filter=ACMR <ref>` reports as changed (`<path>` is required — see `src/cli.ts:426, 504`). The whole pipeline (SAST, AI readers, writer, snapshot/restore) is restricted to that file set, so on a tight feedback loop you pay only for the files that changed since the ref. Deleted files are excluded automatically (we can't review what's not in the working tree).
 
 ### Pre-run cost estimate
+
+A single-agent fix loop (3 iterations) we measured ran at **145K–188K output tokens** on one small task alone — roughly $2–3 per run on Sonnet 4.6's April 2026 pricing. With multi-model rotation each `fix`-mode iteration adds a writer call plus a verifier call (and the reader fan-out runs once at the start and again at final verification). On a tight feedback loop, `max_cost_usd` and `max_wall_time_minutes` are the difference between a $5 PR check and a $50 one — they're the budget contract, not optional safety belts.
 
 Before the AI calls fire, `review` and `fix` print a cost estimate based on the actual file set after filtering, the configured reader/writer models, and `gates.max_cost_usd`:
 
@@ -421,34 +407,50 @@ When `inject_into_reviewer_context: true`, SAST findings are passed to AI reader
 
 ---
 
-## Aggregation algorithm
+## Finding identity & aggregation
 
-Used by both `review` mode (one-shot) and `fix` mode (each verification step).
+Both `review` and `fix` need to answer "is this the same bug?" — for deduplicating cross-reporter overlap in one call (the aggregator), for tracking a bug across iterations (the stable-identity registry), and for matching against `.secure-review-baseline.json` entries (the baseline). All three share one fingerprint definition.
+
+### The fingerprint
 
 ```
-function aggregate(rawFindings):
-    grouped = group rawFindings by key:
-                  key = `${file}::${floor(lineStart / 10)}::${cwe || titlePrefix24}`
-    # v2-file-bucket-cwe — see `findingFingerprint` in src/findings/identity.ts.
-    # CWE is in the key so two genuinely-distinct vulns in the same 10-line
-    # bucket (e.g. SQL injection CWE-89 at line 7 vs command injection CWE-78
-    # at line 13) stay separate. CWE-less findings fall back to a 24-char
-    # title prefix so two reviewers reporting "Missing authentication on /admin"
-    # without a CWE still merge, but "Missing authentication" and "Hardcoded
-    # credential" without CWEs in the same bucket stay separate. The
-    # `fingerprint_algorithm` field in evidence JSON records which algorithm
-    # version produced the run for cross-run reproducibility.
-    for each group:
-        merged.id          = synthesized "F-NN" (assigned in iteration order)
-        merged.title       = first title that created the bucket
-        merged.description = longest description
-        merged.severity    = highest severity in group
-        merged.reportedBy  = union of all names in group
-        merged.confidence  = min(1, |reportedBy| / 3)
-    return merged_findings  # insertion-ordered; callers sort if they want order
+fingerprint(f) = `${file}::${floor(lineStart / 10)}::${cwe || titlePrefix24}`
+# v2-file-bucket-cwe (see src/findings/identity.ts)
 ```
 
-The `floor(lineStart / 10)` line-bucket is intentionally fuzzy — different reviewers often point at slightly different lines for the same bug ("line 24 in Anthropic's view" vs "line 26 in OpenAI's view"). Bucketing by 10-line windows merges these into one finding. The same fingerprint function powers the stable-identity registry and the iteration diff, so aggregation, diffing, and baseline matching are guaranteed to agree on what counts as "the same bug".
+Three parts, each doing one job:
+
+- **`file`** — different file → different bug.
+- **`floor(lineStart / 10)`** — fuzzy 10-line bucket. Different reviewers often point at slightly different lines for the same bug ("line 24 in Anthropic's view" vs "line 26 in OpenAI's view") — bucketing merges them. A bug at line 31 (bucket 3) stays separate from a bug at line 24 (bucket 2).
+- **`cwe || titlePrefix24`** — same CWE keeps the same identity even when the verifier rephrases the title; a *different* CWE produces a new fingerprint (so a writer that "fixes" by relabelling the CWE doesn't silently inherit the old identity). CWE-less findings fall back to a 24-char title prefix.
+
+The `fingerprint_algorithm` field in evidence JSON records the version (`v2-file-bucket-cwe`) so post-hoc analysis across runs can detect when the algorithm changed.
+
+### Per-call aggregation (`F-NN`)
+
+`aggregate(rawFindings)` groups findings by fingerprint and merges each group into one:
+
+```
+for each group:
+    merged.id          = "F-NN" (insertion order, restarts every aggregate() call)
+    merged.title       = first title that created the bucket
+    merged.description = longest description
+    merged.severity    = highest severity in group
+    merged.reportedBy  = union of all names in group
+    merged.confidence  = min(1, |reportedBy| / 3)
+```
+
+Used by `review` (one-shot) and every iteration of `fix`. Source: `src/findings/aggregate.ts`.
+
+### Cross-iteration stable identity (`S-NNN`)
+
+Inside a `fix` run, the same bug gets re-reported across iterations as the verifier rotates. Without a stable identity, the per-iter `introduced` count would be inflated by relabeling, and you couldn't follow one bug through the loop.
+
+A session-scoped registry assigns `S-NNN` the first time a fingerprint is seen, and reuses it for every subsequent sighting. The stable ID surfaces in markdown reports next to the per-call `F-NN` (e.g. `[S-007]`) so a reader can follow one bug across iterations. Source: `src/findings/identity.ts`.
+
+### Why one fingerprint, three uses
+
+Aggregation, cross-iteration diff, and baseline matching all need the same answer to "is this the same bug?". Sharing one fingerprint function guarantees they agree — change the bucket size from 10 to 5 and all three update consistently.
 
 ---
 
@@ -456,10 +458,10 @@ The `floor(lineStart / 10)` line-bucket is intentionally fuzzy — different rev
 
 A stated design goal — *"catch vulnerabilities reliably without overwhelming developers with false positives"* — makes FP suppression a first-class concern, not an afterthought. Four mechanisms work together:
 
-1. **Inter-reporter corroboration via `confidence`.** A finding reported by only one source receives `confidence = min(1, 1/3) ≈ 0.33`. Findings corroborated by 2 or 3 distinct sources score 0.67 / 1.0 respectively. Reports surface confidence prominently so single-source noise renders as low-confidence by construction — the reader can triage by confidence threshold without losing data.
-2. **Fuzzy bucketing in `aggregate()`.** Two readers reporting the same bug (same CWE) at lines 24 and 26 collapse into one finding via `${file}::${floor(lineStart / 10)}::${cwe || titlePrefix24}` (both land in bucket 2); a third reader pointing at line 31 lives in bucket 3 and stays separate — see [§ Aggregation algorithm](#aggregation-algorithm). Without this, duplicate noise from the SAST-blind failure mode (e.g. multiple readers re-flagging the same `detect-object-injection` site that ESLint Security already flagged) would inflate the apparent finding count and look like an FP problem when it's actually a deduplication problem.
-3. **SAST-as-prior-context, not SAST-as-driver.** Per the SAST-blind failure mode, SAST on AI-generated code is mostly silent or FP-heavy. Passing SAST output to readers as *prior context* with the framing "focus on what these missed" steers reader budget toward novel issues instead of duplicating low-signal SAST output.
-4. **Baseline file for known-acceptable findings.** A `.secure-review-baseline.json` records fingerprints of findings the user has explicitly triaged as known/accepted (durable TPs they tolerate, or FPs the model keeps re-finding). Subsequent runs suppress them — the writer never sees them in the fix loop, the report counts them under "baselined" instead of mixing them into "remaining". See [§ Cross-cutting features](#cross-cutting-features).
+1. **Inter-reporter corroboration via `confidence`.** Single-source findings score low; multi-source findings score high, so single-source noise renders as low-confidence by construction and the reader can triage by threshold without losing data (formula and details: [§ Finding identity & aggregation](#finding-identity--aggregation)).
+2. **Fuzzy bucketing in `aggregate()`.** Two readers reporting the same bug (same CWE) at lines 24 and 26 collapse into one finding via `${file}::${floor(lineStart / 10)}::${cwe || titlePrefix24}` (both land in bucket 2); a third reader pointing at line 31 lives in bucket 3 and stays separate — see [§ Finding identity & aggregation](#finding-identity--aggregation). Without this, duplicate noise from the SAST-blind failure mode (e.g. multiple readers re-flagging the same `detect-object-injection` site that ESLint Security already flagged) would inflate the apparent finding count and look like an FP problem when it's actually a deduplication problem.
+3. **SAST-as-prior-context, not SAST-as-driver.** See [§ SAST integration](#sast-integration).
+4. **Baseline file for known-acceptable findings.** See [§ Baseline / FP suppression](#baseline--fp-suppression).
 
 What the tool deliberately does **not** do: assign a final TP/FP label. That remains a human judgement call. The JSON evidence preserves `reportedBy`, `confidence`, and per-reporter raw findings so downstream analysis can compute TP/FP rates with whatever convention the consuming pipeline prefers.
 
@@ -478,11 +480,7 @@ The loop-divergence failure mode showed that naive scan→fix→scan loops eithe
 | `max_wall_time_minutes` | Bound | Wall-clock ceiling for the same runaway scenarios — independent from cost so a fast-but-cheap loop and a slow-but-cheap loop both have an exit. |
 | `max_iterations` (≤ 10) | Bound | Hard ceiling on write churn; bounds the LOC-growth runaway we measured at 33–86%. |
 
-The post-loop **final verification with `all_reviewers`** is a separate safety net for a different failure mode: an iteration verifier saying "clean" while readers it didn't rotate to would still flag issues. It is recommended (and the default for new configs created by `init`) precisely because it directly addresses the single-model self-review failure mode's low single-agent resolution rate.
-
-### Cost gates are not theoretical
-
-A single-agent fix loop (3 iterations) we measured ran at **145K–188K output tokens** on one small task alone — roughly $2–3 per run on Sonnet 4.6's April 2026 pricing. With multi-model rotation each `fix`-mode iteration adds a writer call plus a verifier call (and the reader fan-out runs once at the start and again at final verification). On a tight feedback loop, `max_cost_usd` and `max_wall_time_minutes` are the difference between a $5 PR check and a $50 one — they're not optional safety belts, they're the budget contract.
+The post-loop **final verification with `all_reviewers`** is a separate safety net — see [§ Phase 3: Final verification (parallel)](#phase-3-final-verification-parallel). Recommended (and the default for new configs created by `init`).
 
 To run the same convergence analysis on your own runs, see [§ Output schema](#output-schema) for the exact JSON fields.
 
