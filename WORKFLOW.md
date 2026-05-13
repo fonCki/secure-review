@@ -29,6 +29,19 @@ The rest of this document describes *what* the tool does. The two cross-cutting 
 
 ---
 
+## Defense in depth
+
+The validation pipeline this tool fits into has four layers. `secure-review` implements **Layers 2–3** (static + AI review). Layer 1 (generation-time guardrails) is something you set up in your AI assistant; Layer 4 (live HTTP probing) ships in the sibling package [`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime).
+
+![Defense-in-depth pipeline](docs/images/defense-in-depth.png)
+
+- **Layer 1 — Generation Guardrails.** `.cursorrules`, `.windsurfrules`, OWASP-aware system prompts. Guide the AI to write secure code from the start, before any code exists to review. Out of scope for this package — you configure this in your IDE / AI assistant.
+- **Layer 2 — CI/CD SAST gate.** Semgrep + ESLint + `npm audit` on every PR. Findings are injected as prior context for Layer 3 readers via `inject_into_reviewer_context: true`, not used as a standalone gate (see the SAST-blind failure mode above).
+- **Layer 3 — AI review and fix.** Multi-model union review with a cross-model rotating fix loop. Convergence guards — clean-rotation requirement, divergence detection, and hard bounds on iterations / cost / wall-time — are motivated by the loop-divergence and single-model self-review failure modes.
+- **Layer 4 — Runtime probing.** Live HTTP probes (`attack`, `attack-ai`, ZAP, Nuclei) catch flaws SAST and static AI review can't see. Ships in [`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime), not in this package.
+
+---
+
 ## Mapping modes to pipeline layers
 
 How the five modes map to the defense-in-depth pipeline.
