@@ -314,9 +314,9 @@ Together these prevent the failure mode that motivated the 0.5.0 redesign: a sin
 
 ## `pr` mode — GitHub Action entrypoint
 
-Runs a single static-review flow against a pull request. The legacy `INPUT_RUNTIME_MODE` input is gone, but `INPUT_MODE` is still read for backward compatibility (`action.yml:12` still exposes `mode`; `src/cli.ts:628, 899` still parse it). Its values are now redirected: `fix` maps to `--autofix` (itself a deprecated no-op), and `attack` / `attack-ai` print a deprecation warning pointing users at [`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime). The only practical knob from the pre-v1 surface is the deprecated `--autofix` flag, which is now a no-op kept only for backward compatibility with existing workflow YAML. Runtime probing moved to [`secure-review-runtime`](https://github.com/sstaempfli/secure-review-runtime).
+The entrypoint invoked by the bundled GitHub Action. Runs `review` mode on the full repository checkout, filters aggregated findings against the PR diff, and posts a single GitHub review with line-anchored inline comments where the diff permits them.
 
-Runs `review` mode on the full checkout, then filters aggregated findings against the PR diff before posting a single review with line-anchored comments where GitHub permits them.
+`pr` mode is **GitHub-Actions-only** — running `secure-review pr` locally requires `GITHUB_EVENT_PATH` and `GITHUB_TOKEN` in the environment, and will exit with an error if they're missing.
 
 ![pr mode: fork guard, diff commentable-line map, full-checkout review, PR review buckets, and exit status](docs/images/pr-mode.png)
 
@@ -326,8 +326,7 @@ Runs `review` mode on the full checkout, then filters aggregated findings agains
 1. Verify PR context: GITHUB_EVENT_PATH, owner/repo/pr_number
 2. Skip if PR is from a fork (no secret access)
 3. Fetch PR file list, parse diffs into commentable line numbers per file
-4. Always run runReviewMode on the full checkout (full multi-reader scan + SAST)
-   — no INPUT_MODE branching; the deprecated --autofix flag is a no-op
+4. Run review mode on the full checkout (multi-reader scan + SAST)
 5. Hand all findings + the per-file commentable-line map to `postPrReview()`
    (defined in src/reporters/github-pr.ts). Inside, findings are split into 3 buckets:
      - inline:        in a changed file AND on a commentable line → posted as inline review comment
