@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { generateConfig, generateEnv, generateWorkflow, WRITER_MODEL_DEFAULTS, type InitAnswers } from '../src/commands/init.js';
+import { defaultAnswers, generateConfig, generateEnv, generateWorkflow, WRITER_MODEL_DEFAULTS, type InitAnswers } from '../src/commands/init.js';
 
 const all: InitAnswers = {
   useAnthropic: true, useOpenAI: true, useGoogle: true,
@@ -115,5 +115,26 @@ describe('init generators', () => {
     expect(wf).toContain('contents: read');
     expect(wf).toContain('pull-requests: write');
     expect(wf).toContain('checks: write');
+  });
+
+  it('--yes default writes the active workflow file, not .yml.example (papercut #15)', () => {
+    // Was previously 'example'; flipping to 'active' so users following the
+    // wizard defaults get a workflow GitHub Actions can actually pick up.
+    expect(defaultAnswers().githubAction).toBe('active');
+  });
+
+  it('installs semgrep in the generated workflow when SAST is enabled (papercut #16)', () => {
+    const wfEnabled = generateWorkflow({ ...all, enableSast: true });
+    expect(wfEnabled).toContain('actions/setup-python@v5');
+    expect(wfEnabled).toContain('pip install semgrep');
+    // The setup-python step must come before the secure-review action so
+    // semgrep is on PATH when the action runs.
+    expect(wfEnabled.indexOf('pip install semgrep')).toBeLessThan(
+      wfEnabled.indexOf('uses: fonCki/secure-review'),
+    );
+
+    const wfDisabled = generateWorkflow({ ...all, enableSast: false });
+    expect(wfDisabled).not.toContain('setup-python');
+    expect(wfDisabled).not.toContain('pip install semgrep');
   });
 });

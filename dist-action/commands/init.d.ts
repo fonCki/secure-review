@@ -21,6 +21,7 @@ export interface InitAnswers {
 export declare const WRITER_MODEL_DEFAULTS: Record<ProviderName, string>;
 export declare const READER_MODEL_DEFAULTS: Record<ProviderName, string>;
 export declare function runInit(opts?: InitOptions): Promise<void>;
+export declare function defaultAnswers(): InitAnswers;
 export declare function generateConfig(a: InitAnswers, skillsBase?: string): string;
 /**
  * Render the GitHub Actions workflow for this project. Only includes env

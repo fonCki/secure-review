@@ -2,6 +2,34 @@
 
 All notable changes to `secure-review`. Newest first.
 
+## [1.0.2] — 2026-05-14
+
+Bug fixes and UX polish — surfaced by end-to-end testing on a fresh Condition A target (Claude Sonnet 4.6 + OWASP). No breaking changes; all working paths unaffected.
+
+### Fixed
+
+- **ESLint config-missing wall-of-text** — `src/sast/eslint.ts` now checks for `eslint.config.{js,mjs,cjs}` (walking up parent directories the same way ESLint v9 does) before invoking `npx eslint`. When no flat config is reachable, returns `available: false` with a one-line reason instead of dumping the v9 migration message to stderr (local) or producing a misleading `"Unexpected end of JSON input"` (CI).
+- **`gemini-2.5-flash` missing from cost table** — `src/util/cost.ts` now includes the default Google reader model's real pricing (`$0.075`/M input, `$0.30`/M output). Previously the cost estimator silently used the `$5/$15` fallback rate, inflating estimates ~67×. `gemini-2.5-flash-lite` added at the same time.
+- **`pr` mode local-invocation error is now helpful** — `src/cli.ts` now points users at the correct local subcommands (`review`, `scan`, `fix`) when `pr` is invoked without `GITHUB_EVENT_PATH`. Previously the error was a single terse line offering no recovery hint.
+
+### Improved
+
+- **`init` generates a Semgrep install step when SAST is enabled** — `src/commands/init.ts` `generateWorkflow` now conditionally adds `actions/setup-python@v5` + `pip install semgrep` before the secure-review action runs. Previously the generated workflow only did `npm ci`, so Semgrep silently degraded to `ran: false` in every CI run, leaving Layer 2 SAST to npm-audit only.
+- **`init` defaults `githubAction` to `'active'`** (was `'example'`) for both `--yes` and interactive flows. The `.yml.example` mode was a silent footgun: GitHub Actions does not pick up `*.example` files, so users who took the default got a workflow that never triggered. The success message now reminds users to run `setup-secrets` before pushing if they chose `'active'`.
+- **`defaultAnswers()` is now exported** from `src/commands/init.ts` so tests (and downstream consumers) can introspect the wizard's defaults.
+
+### Tests
+
+- +6 focused tests covering each fix area. Test count: 224 → 230.
+  - `test/sast-eslint-config.test.ts` (new) — graceful skip when no `eslint.config.*`, parent-directory walk.
+  - `test/cost.test.ts` — `gemini-2.5-flash` known + priced correctly.
+  - `test/cli-exit-codes.test.ts` — `pr` local-invocation error contains hints to `review`/`scan`/`fix`.
+  - `test/init.test.ts` — default `githubAction` is `'active'`; workflow includes `setup-python` + `pip install semgrep` when SAST enabled, omits when disabled.
+
+### Cleanup
+
+- Dropped unused imports `access` (test/bug3-rollback.test.ts) and `resolve` (test/bug3-rollback.test.ts, test/files-since.test.ts) that were tripping lint.
+
 ## [1.0.1] — 2026-05-04
 
 Docs-only patch release. No code changes; npm tarball updated so the public README + WORKFLOW match v1.0.0 code.

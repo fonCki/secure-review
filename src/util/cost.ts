@@ -27,6 +27,8 @@ const PRICES: Record<string, Price> = {
 
   // Google
   'gemini-2.5-pro': { inputPerMtok: 1.25, outputPerMtok: 5 },
+  'gemini-2.5-flash': { inputPerMtok: 0.075, outputPerMtok: 0.3 },
+  'gemini-2.5-flash-lite': { inputPerMtok: 0.075, outputPerMtok: 0.3 },
   'gemini-2.0-flash': { inputPerMtok: 0.1, outputPerMtok: 0.4 },
 };
 

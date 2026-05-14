@@ -636,7 +636,13 @@ async function main(): Promise<void> {
 
         const eventPath = process.env.GITHUB_EVENT_PATH;
         if (!eventPath)
-          throw new Error('GITHUB_EVENT_PATH not set — `pr` subcommand requires GitHub Actions context');
+          throw new Error(
+            '`pr` is the GitHub Action entry point and requires a runner context (GITHUB_EVENT_PATH).\n' +
+              'For local invocation use:\n' +
+              '  secure-review review <path>           # multi-model review on a path\n' +
+              '  secure-review scan <path>             # SAST only\n' +
+              '  secure-review fix <path>              # iterative review + fix loop',
+          );
         const rawEvent = JSON.parse(await readFile(eventPath, 'utf8')) as unknown;
         const eventParseResult = GithubPrEventSchema.safeParse(rawEvent);
         if (!eventParseResult.success) {

@@ -117,3 +117,20 @@ describe('CLI review exit codes for reviewer health', () => {
     expect(result.stderr).not.toContain('Review degraded');
   });
 });
+
+describe('CLI `pr` subcommand — local-invocation guidance (papercut #5)', () => {
+  it('emits a friendly error pointing at local subcommands when GITHUB_EVENT_PATH is unset', () => {
+    const env = { ...process.env };
+    delete env.GITHUB_ACTIONS;
+    delete env.GITHUB_EVENT_PATH;
+    const result = spawnSync(process.execPath, [cliPath, 'pr'], { env, encoding: 'utf8' });
+    expect(result.status).not.toBe(0);
+    const combined = `${result.stdout}\n${result.stderr}`;
+    // Old message was a single terse line; new message points the user at the
+    // right local subcommands.
+    expect(combined).toMatch(/GITHUB_EVENT_PATH/);
+    expect(combined).toMatch(/secure-review review/);
+    expect(combined).toMatch(/secure-review scan/);
+    expect(combined).toMatch(/secure-review fix/);
+  });
+});

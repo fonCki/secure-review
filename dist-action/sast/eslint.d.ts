@@ -5,10 +5,10 @@ export interface EslintResult {
     error?: string;
 }
 /**
- * Runs ESLint with eslint-plugin-security. Expects the target project to
- * have a working ESLint config; we pass --resolve-plugins-relative-to
- * to allow consuming repos to ship their own config. If eslint isn't
- * installed, gracefully returns available=false.
+ * Runs ESLint with the target project's flat config (eslint.config.{js,mjs,cjs}).
+ * Returns `available: false` with a one-line reason if no config is reachable
+ * from the scan root, instead of dumping ESLint v9's wall-of-text migration
+ * message. Also returns `available: false` if eslint itself isn't installed.
  */
 export declare function runEslint(path: string, reviewerName?: string): Promise<EslintResult>;
 //# sourceMappingURL=eslint.d.ts.map

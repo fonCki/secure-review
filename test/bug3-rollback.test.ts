@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { mkdtemp, rm, writeFile, mkdir, readFile, access } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { snapshotFiles, augmentSnapshot, restoreSnapshot } from '../src/modes/fix.js';
 import type { FileContent } from '../src/util/files.js';

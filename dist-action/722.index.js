@@ -8,7 +8,7 @@ export const modules = {
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   runInit: () => (/* binding */ runInit)
 /* harmony export */ });
-/* unused harmony exports WRITER_MODEL_DEFAULTS, READER_MODEL_DEFAULTS, generateConfig, generateWorkflow, SECURE_REVIEW_ENV_MARKER, generateEnv */
+/* unused harmony exports WRITER_MODEL_DEFAULTS, READER_MODEL_DEFAULTS, defaultAnswers, generateConfig, generateWorkflow, SECURE_REVIEW_ENV_MARKER, generateEnv */
 /* harmony import */ var node_fs_promises__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1455);
 /* harmony import */ var node_fs_promises__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(node_fs_promises__WEBPACK_IMPORTED_MODULE_0__);
 /* harmony import */ var node_readline_promises__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(6848);
@@ -115,10 +115,14 @@ async function runInit(opts = {}) {
     }
     if (workflowAction === 'created' && workflowPath) {
         console.log(`[32m✔[0m Created ${workflowPath}`);
-        if (answers.githubAction === 'example') {
-            console.log(`[36mℹ[0m To activate later: mv ${workflowPath} .github/workflows/secure-review.yml`);
+        if (answers.githubAction === 'active') {
+            console.log(`[33m![0m Workflow is ACTIVE — runs on the next PR.`);
+            console.log(`[36mℹ[0m Run [1mnpx secure-review setup-secrets[0m BEFORE pushing, or the first PR will fail with missing-secret errors.`);
         }
-        console.log(`[36mℹ[0m After you push to GitHub, run: npx secure-review setup-secrets`);
+        else if (answers.githubAction === 'example') {
+            console.log(`[36mℹ[0m To activate later: mv ${workflowPath} .github/workflows/secure-review.yml`);
+            console.log(`[36mℹ[0m After you push to GitHub, run: npx secure-review setup-secrets`);
+        }
         console.log(`   (sets API keys as GitHub secrets via gh CLI; or set them manually in repo Settings → Secrets)`);
     }
     else if (workflowAction === 'preexisted' && workflowPath) {
@@ -155,9 +159,11 @@ function defaultAnswers() {
         maxIterations: 3,
         enableSast: true,
         writeKeys: false,
-        // Safer default for --yes: emit the example file (renamed by user to activate)
-        // rather than auto-arming the action on the user's next PR push.
-        githubAction: 'example',
+        // Default = 'active'. The wizard-friendly choice: users who answered "yes,
+        // set up GitHub Actions for me" expect a workflow that actually runs.
+        // The success message reminds them to run `setup-secrets` before pushing,
+        // so the first PR doesn't fail on missing-secret errors.
+        githubAction: 'active',
     };
 }
 async function ask() {
@@ -245,7 +251,7 @@ async function ask() {
         console.log('  - example: writes .github/workflows/secure-review.yml.example');
         console.log('             (you rename to .yml when you want to enable it)');
         console.log('  - skip:    no CI file written');
-        const githubAction = (await askChoice('GitHub Action workflow?', ['active', 'example', 'skip'], 'example'));
+        const githubAction = (await askChoice('GitHub Action workflow?', ['active', 'example', 'skip'], 'active'));
         console.log('');
         console.log('API keys:');
         const writeKeys = await askBool('Enter API keys now? (No = create .env.example for you to fill in later)', false);
@@ -399,7 +405,15 @@ jobs:
       # npm ci is required so the .secure-review.yml's
       # node_modules/secure-review/skills/... paths resolve in the runner.
       - run: npm ci
-      - uses: fonCki/secure-review@v1  # TODO: replace with a full commit SHA, e.g. fonCki/secure-review@<sha>
+${a.enableSast
+        ? `      # Semgrep is a Python tool; install it so the Layer 2 SAST pack
+      # (p/javascript, p/typescript, p/nodejs, p/owasp-top-ten) can run.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install semgrep
+`
+        : ''}      - uses: fonCki/secure-review@v1  # TODO: replace with a full commit SHA, e.g. fonCki/secure-review@<sha>
         env:
 ${envLines.join('\n')}
 `;
